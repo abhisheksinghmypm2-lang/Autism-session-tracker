@@ -727,6 +727,10 @@ async function settingsModal() {
         <input type="file" id="import-file" accept="application/json,.json" hidden></label>
     </div>
 
+    <div class="section-title" style="margin-left:0;margin-top:22px">🗑 Start fresh</div>
+    <p class="muted" style="font-size:12.5px;margin:0 0 10px">Erase everything and begin with a clean slate${cloud && currentUser ? ' — clears this device <em>and</em> your synced cloud data' : ''}.</p>
+    <button class="btn danger" id="delete-all">Delete all data & start fresh</button>
+
     <button class="btn secondary" data-act="cancel" style="margin-top:18px">Close</button>`);
 
   el('rem-enable').addEventListener('change', async (e) => {
@@ -749,7 +753,21 @@ async function settingsModal() {
   });
   el('do-export').addEventListener('click', exportData);
   el('import-file').addEventListener('change', (e) => { if (e.target.files[0]) importData(e.target.files[0]); });
+  el('delete-all').addEventListener('click', deleteAllData);
   wireCloudSync();
+}
+
+async function deleteAllData() {
+  if (!confirm('Delete ALL data — plans, sessions, documents, daily activity, and settings — and start fresh?\n\nThis cannot be undone.')) return;
+  const stores = [STORE.programs, STORE.sessions, STORE.checks, STORE.kv];
+  try {
+    if (cloud && currentUser) { for (const s of stores) await cloud.db.clear(s); }  // wipe cloud copy
+    for (const s of stores) await localDB.clear(s);                                  // wipe this device
+    alert('All data cleared. Starting fresh.');
+    closeModal(); state.view = 'dashboard'; state.programId = null; render();
+  } catch (e) {
+    alert('Could not clear everything: ' + (e?.message || e));
+  }
 }
 
 /* ---------------- Account & sync UI ---------------- */
@@ -895,41 +913,22 @@ document.addEventListener('click', async (e) => {
 });
 
 /* ============================================================
-   Cloud sync init (optional) + first-time migration
+   Cloud sync init (optional)
    ============================================================ */
-async function migrateLocalToCloud() {
-  const cloudPrograms = await cloud.db.getAll(STORE.programs);
-  if (cloudPrograms.length) return;                       // account already has data
-  const localPrograms = await localDB.getAll(STORE.programs);
-  if (!localPrograms.length) return;                      // nothing local to move
-  if (!confirm('Upload your existing on-device data to this account so it syncs everywhere?')) return;
-
-  for (const p of localPrograms) await cloud.db.put(STORE.programs, p);
-  for (const s of await localDB.getAll(STORE.sessions)) {
-    if (s.documents) {
-      for (const d of s.documents) {
-        if (d.blob) { Object.assign(d, await cloud.uploadDocument(d.blob, d.name)); delete d.blob; }
-      }
-    }
-    await cloud.db.put(STORE.sessions, s);
-  }
-  for (const c of await localDB.getAll(STORE.checks)) await cloud.db.put(STORE.checks, c);
-  for (const k of await localDB.getAll(STORE.kv)) await cloud.db.put(STORE.kv, k);
-  alert('Done — your data is now synced to your account.');
-}
-
 async function initCloud() {
   try {
     cloud = await createCloud(firebaseConfig);
-    cloud.onUser(async (user) => {
+    cloud.onUser((user) => {
+      // Render the screen IMMEDIATELY on any auth change — never block the UI
+      // on a cloud round-trip. Uploading local data is a manual button now.
       currentUser = user;
       DB = user ? cloud.db : localDB;
-      if (user) { try { await migrateLocalToCloud(); } catch (e) { console.warn('migration skipped', e); } }
       render();
     });
   } catch (e) {
     console.warn('Cloud sync unavailable:', e);
     cloud = null;
+    render();
   }
 }
 
