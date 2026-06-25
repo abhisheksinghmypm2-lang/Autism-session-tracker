@@ -1,23 +1,21 @@
 // ============================================================
 //  Firebase cloud-sync configuration
 // ============================================================
-// Cloud sync is OPTIONAL. Until you fill this in, the app works exactly as
-// before — fully on-device. To turn on multi-device sync & shared accounts:
+// Cloud sync lets you use the app on multiple devices/browsers and share
+// with another caregiver. Sign in from Settings → Account & sync on each
+// device using the same email & password.
 //
-//   1. Create a free Firebase project (see README → "Cloud sync setup").
-//   2. Paste your Web app config below (Project settings → Your apps → Web).
-//      These values are NOT secrets — they only identify your project.
-//   3. Set CLOUD_ENABLED to true.
-//
-// That's it. Sign in from Settings → Account & sync on each device.
+// The values below are the project's public Web config (not secrets — they
+// only identify the Firebase project to the browser).
 
-export const CLOUD_ENABLED = false;
+export const CLOUD_ENABLED = true;
 
 export const firebaseConfig = {
-  apiKey: '',
-  authDomain: '',
-  projectId: '',
-  storageBucket: '',
-  messagingSenderId: '',
-  appId: '',
+  apiKey: 'AIzaSyB59z-_wcpabJXq7izA9sCcDeGvCY3emGg',
+  authDomain: 'autism-central-99c51.firebaseapp.com',
+  projectId: 'autism-central-99c51',
+  storageBucket: 'autism-central-99c51.firebasestorage.app',
+  messagingSenderId: '467064280750',
+  appId: '1:467064280750:web:e02c0ca39b2f5afd20ff3f',
+  measurementId: 'G-BRPH85R26P',
 };
