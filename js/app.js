@@ -82,15 +82,55 @@ async function loadSessions(programId) {
   state.sessions = (await DB.byIndex(STORE.sessions, 'programId', programId))
     .sort((a, b) => (a.number || 0) - (b.number || 0));
 }
-async function createProgram({ type, name, cycleStart, track }) {
+async function createProgram({ type, name, cycleStart, track, completed = 0 }) {
   const program = { id: uid(), type, track: track || 'Institute', name: name || TYPES[type].label, cycleStart, createdAt: Date.now() };
   await DB.put(STORE.programs, program);
+  // `completed` = sessions already done before tracking started. They count as
+  // attended but carry no individual date (flagged preTracked).
   if (TYPES[type].mode === 'fixed') {
-    for (let i = 1; i <= TYPES[type].total; i++) await DB.put(STORE.sessions, blankSession(program.id, i));
+    for (let i = 1; i <= TYPES[type].total; i++) {
+      const s = blankSession(program.id, i);
+      if (i <= completed) { s.status = 'attended'; s.preTracked = true; }
+      await DB.put(STORE.sessions, s);
+    }
+  } else if (completed > 0) {
+    for (let i = 1; i <= completed; i++) {
+      const s = blankSession(program.id, i);
+      s.status = 'attended'; s.preTracked = true;
+      await DB.put(STORE.sessions, s);
+    }
   } else {
     await DB.put(STORE.sessions, blankSession(program.id, 1, cycleStart));
   }
   return program;
+}
+
+// Quick-set how many sessions are completed to date. Only adds/removes
+// "pre-tracked" markers — never overwrites sessions you've logged with a
+// date, notes, documents, or an explicit miss.
+async function adjustCompleted(delta) {
+  const p = await DB.get(STORE.programs, state.programId);
+  const sessions = (await DB.byIndex(STORE.sessions, 'programId', p.id)).sort((a, b) => a.number - b.number);
+  const total = TYPES[p.type].total ?? sessions.length;
+  const attended = sessions.filter((s) => s.status === 'attended').length;
+  const target = Math.max(0, Math.min(total, attended + delta));
+  if (target === attended) return;
+  if (target > attended) {
+    let need = target - attended;
+    for (const s of sessions) {
+      if (need <= 0) break;
+      if (s.status === 'scheduled') { s.status = 'attended'; s.preTracked = true; await DB.put(STORE.sessions, s); need--; }
+    }
+  } else {
+    let remove = attended - target;
+    for (let i = sessions.length - 1; i >= 0 && remove > 0; i--) {
+      const s = sessions[i];
+      if (s.status === 'attended' && s.preTracked && !s.date && !s.notes && !(s.documents && s.documents.length)) {
+        s.status = 'scheduled'; delete s.preTracked; await DB.put(STORE.sessions, s); remove--;
+      }
+    }
+  }
+  render();
 }
 function blankSession(programId, number, date = '') {
   return { id: uid(), programId, number, date, status: 'scheduled', notes: '', documents: [] };
@@ -323,12 +363,31 @@ async function renderProgram(v) {
         <div class="tl-node">${s.status === 'attended' ? '✓' : s.status === 'missed' ? '✕' : s.number}</div>
         <div class="tl-card" data-act="session" data-id="${s.id}">
           <div class="tl-top"><span class="tl-num">Session ${s.number}</span>${pill}</div>
-          ${s.date ? `<div class="tl-date">${fmtDate(s.date)}</div>` : '<div class="tl-date">Tap to set date & status</div>'}
+          ${s.date ? `<div class="tl-date">${fmtDate(s.date)}</div>` : (s.preTracked ? '<div class="tl-date">Completed before tracking</div>' : '<div class="tl-date">Tap to set date & status</div>')}
           ${s.notes ? `<div class="tl-notes">${esc(s.notes)}</div>` : ''}
           ${s.documents?.length ? `<div class="tl-docs">📎 ${s.documents.length} document${s.documents.length === 1 ? '' : 's'}</div>` : ''}
         </div>
       </div>`;
   }).join('');
+
+  // "as of today" headline + completed-to-date stepper
+  const cycleTotal = TYPES[p.type].total;            // null for ABA (monthly)
+  const toGo = cycleTotal ? Math.max(0, cycleTotal - st.attended) : null;
+  const toDate = cycleTotal
+    ? `As of ${fmtDate(todayISO())} · <strong>${st.attended} of ${cycleTotal} done</strong> · ${toGo} to go`
+    : `As of ${fmtDate(todayISO())} · <strong>${st.attended} session${st.attended === 1 ? '' : 's'} completed</strong> this cycle`;
+  const stepper = cycleTotal ? `
+    <div class="card">
+      <div class="row-between">
+        <div><h2 style="margin:0">${ic('chart')}Completed to date</h2>
+          <p class="sub" style="margin:2px 0 0">Quick-set how many sessions are done</p></div>
+        <div class="stepper">
+          <button data-act="count-dec" aria-label="decrease">−</button>
+          <span class="stepper-n">${st.attended}</span>
+          <button data-act="count-inc" aria-label="increase">＋</button>
+        </div>
+      </div>
+    </div>` : '';
 
   // per-plan breakdown bar
   const total = st.total || 1;
@@ -352,8 +411,10 @@ async function renderProgram(v) {
         <span class="tag">${p.type}</span>
         <h2 style="margin-top:6px">${esc(p.name)}</h2>
         <div class="meta" style="color:var(--muted);font-size:12.5px;margin-top:4px">${ic(TRACKS[p.track].icon)}${TRACKS[p.track].label} · started ${fmtDate(p.cycleStart)}${end ? `<br>Cycle ends ${fmtDate(end)}` : ''}</div>
+        <div class="todate">${toDate}</div>
       </div>
     </div>
+    ${stepper}
     <div class="card">
       <h2>${ic('chart')}Attendance breakdown</h2>
       ${bar}
@@ -453,6 +514,10 @@ function newPlanModal(defaultTrack = 'Institute') {
       <input id="plan-name" placeholder="e.g. OT with Dr. Mehta" /></label>
     <label class="field"><span>Start date</span>
       <input id="plan-date" type="date" value="${todayISO()}" /></label>
+    <label class="field"><span>Sessions already completed (before today)</span>
+      <input id="plan-completed" type="number" inputmode="numeric" min="0" value="0" />
+      <span style="font-weight:400;color:var(--muted);font-size:12px;margin-top:6px">Already partway? Enter how many you've done. They'll count toward your total (no dates needed).</span>
+    </label>
     <div class="btn-row" style="margin-top:8px">
       <button class="btn secondary" data-act="cancel">Cancel</button>
       <button class="btn" id="save-plan">Create plan</button>
@@ -473,7 +538,9 @@ function newPlanModal(defaultTrack = 'Institute') {
   });
   el('save-plan').addEventListener('click', async () => {
     const cycleStart = el('plan-date').value || todayISO();
-    const p = await createProgram({ type, track, name: el('plan-name').value.trim(), cycleStart });
+    let completed = Math.max(0, parseInt(el('plan-completed').value, 10) || 0);
+    if (TYPES[type].total) completed = Math.min(completed, TYPES[type].total);
+    const p = await createProgram({ type, track, name: el('plan-name').value.trim(), cycleStart, completed });
     closeModal(); state.view = 'program'; state.programId = p.id; render();
   });
 }
@@ -769,6 +836,8 @@ document.addEventListener('click', async (e) => {
     case 'open': state.view = 'program'; state.programId = t.dataset.id; return render();
     case 'back': state.view = 'sessions'; state.programId = null; return render();
     case 'session': return sessionModal(t.dataset.id);
+    case 'count-inc': return adjustCompleted(1);
+    case 'count-dec': return adjustCompleted(-1);
     case 'add-cta': return addCtaModal();
     case 'add-res': return addResModal();
     case 'toggle-cta': {

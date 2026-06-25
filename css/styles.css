@@ -120,6 +120,23 @@ button { font-family: inherit; }
 .track-head .ic { width: 22px; height: 22px; vertical-align: middle; margin: 0; color: var(--brand); }
 .card h2 .ic, .section-title .ic { color: var(--brand); }
 
+/* ---------- "as of today" headline ---------- */
+.todate {
+  margin-top: 10px; font-size: 13px; color: var(--ink-soft);
+  background: color-mix(in srgb, var(--brand) 12%, transparent);
+  padding: 9px 11px; border-radius: 11px; line-height: 1.35;
+}
+.todate strong { color: var(--ink); font-weight: 800; }
+
+/* ---------- stepper ---------- */
+.stepper { display: flex; align-items: center; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; flex: 0 0 auto; }
+.stepper button {
+  width: 42px; height: 42px; border: none; background: var(--bg-2); color: var(--ink);
+  font-size: 22px; font-weight: 700; cursor: pointer; line-height: 1;
+}
+.stepper button:active { background: color-mix(in srgb, var(--brand) 18%, transparent); }
+.stepper .stepper-n { min-width: 46px; text-align: center; font-weight: 800; font-size: 18px; }
+
 /* ---------- per-plan breakdown bar ---------- */
 .statbar { display: flex; height: 16px; border-radius: 999px; overflow: hidden; background: var(--bg-2); margin: 12px 0 14px; }
 .statbar span { display: block; transition: flex .3s; }
