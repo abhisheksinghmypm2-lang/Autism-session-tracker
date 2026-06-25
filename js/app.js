@@ -1,5 +1,6 @@
 import { db, STORE, uid } from './db.js';
 import { DEFAULT_CTAS, DEFAULT_RESOURCES, CAT_COLORS } from './content.js';
+import { donut, ring, heatmap } from './charts.js';
 
 /* ============================================================
    Session-type configuration
@@ -11,6 +12,7 @@ const TYPES = {
   Speech: { label: 'Speech Therapy',       total: 24, mode: 'fixed' },
   ABA:    { label: 'ABA',                  total: null, mode: 'monthly' },
 };
+const COLORVAR = { OT: 'var(--ot)', Speech: 'var(--speech)', ABA: 'var(--aba)' };
 
 /* ---------------- date helpers (all local-time, no UTC round-trips) ---------------- */
 function toISO(d) {
@@ -27,18 +29,18 @@ function addMonths(iso, n) {
   const d = new Date(y, m - 1, dd);
   const day = d.getDate();
   d.setMonth(d.getMonth() + n);
-  // handle month overflow (e.g. Jan 31 -> Feb 28)
-  if (d.getDate() < day) d.setDate(0);
+  if (d.getDate() < day) d.setDate(0); // month overflow (Jan 31 -> Feb 28)
+  return toISO(d);
+}
+function addDays(iso, n) {
+  const [y, m, dd] = iso.split('-').map(Number);
+  const d = new Date(y, m - 1, dd);
+  d.setDate(d.getDate() + n);
   return toISO(d);
 }
 
 /* ---------------- app state ---------------- */
-const state = {
-  view: 'dashboard',
-  programId: null,
-  programs: [],
-  sessions: [],   // sessions for the currently-open program
-};
+const state = { view: 'dashboard', programId: null, programs: [], sessions: [] };
 
 const el = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -49,49 +51,58 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<
 async function loadPrograms() {
   state.programs = (await db.getAll(STORE.programs)).sort((a, b) => b.createdAt - a.createdAt);
 }
-
 async function loadSessions(programId) {
   state.sessions = (await db.byIndex(STORE.sessions, 'programId', programId))
     .sort((a, b) => (a.number || 0) - (b.number || 0));
 }
-
 async function createProgram({ type, name, cycleStart }) {
-  const program = {
-    id: uid(), type, name: name || TYPES[type].label,
-    cycleStart, createdAt: Date.now(),
-  };
+  const program = { id: uid(), type, name: name || TYPES[type].label, cycleStart, createdAt: Date.now() };
   await db.put(STORE.programs, program);
-
   if (TYPES[type].mode === 'fixed') {
-    for (let i = 1; i <= TYPES[type].total; i++) {
-      await db.put(STORE.sessions, blankSession(program.id, i));
-    }
+    for (let i = 1; i <= TYPES[type].total; i++) await db.put(STORE.sessions, blankSession(program.id, i));
   } else {
-    // ABA monthly: start with one session on the start date
     await db.put(STORE.sessions, blankSession(program.id, 1, cycleStart));
   }
   return program;
 }
-
 function blankSession(programId, number, date = '') {
   return { id: uid(), programId, number, date, status: 'scheduled', notes: '', documents: [] };
 }
-
 async function deleteProgram(id) {
   const sess = await db.byIndex(STORE.sessions, 'programId', id);
   for (const s of sess) await db.delete(STORE.sessions, s.id);
   await db.delete(STORE.programs, id);
 }
-
 function cycleEnd(program) {
   return TYPES[program.type].mode === 'monthly' ? addMonths(program.cycleStart, 1) : null;
 }
-
 function stats(program, sessions) {
   const attended = sessions.filter((s) => s.status === 'attended').length;
   const missed = sessions.filter((s) => s.status === 'missed').length;
   const total = TYPES[program.type].total ?? sessions.length;
-  return { attended, missed, total, done: attended + missed };
+  return { attended, missed, total, done: attended + missed, remaining: Math.max(0, total - attended - missed) };
+}
+
+/* ---------------- daily-ritual analytics ---------------- */
+async function getCTAs() {
+  const custom = (await db.get(STORE.kv, 'customCtas'))?.value || [];
+  return [...DEFAULT_CTAS, ...custom];
+}
+// distinct checks per date, from the whole checks store
+async function checkCountsByDate() {
+  const all = await db.getAll(STORE.checks);
+  const map = {};
+  for (const c of all) { const d = c.key.split('|')[0]; map[d] = (map[d] || 0) + 1; }
+  return map;
+}
+function computeStreak(countsByDate, ctaCount) {
+  if (!ctaCount) return 0;
+  const complete = (iso) => (countsByDate[iso] || 0) >= ctaCount;
+  let day = todayISO();
+  if (!complete(day)) day = addDays(day, -1); // today not done yet shouldn't break the streak
+  let n = 0;
+  while (complete(day)) { n++; day = addDays(day, -1); }
+  return n;
 }
 
 /* ============================================================
@@ -100,14 +111,12 @@ function stats(program, sessions) {
 function setTitle(t) { el('view-title').textContent = t; }
 
 async function render() {
-  // sync active tab
-  document.querySelectorAll('.tab').forEach((b) =>
-    b.classList.toggle('active', b.dataset.view === state.view));
+  document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
   const v = el('view');
   el('add-btn').style.display = (state.view === 'sessions' || state.view === 'dashboard') ? '' : 'none';
-
+  window.scrollTo({ top: 0 });
   switch (state.view) {
-    case 'dashboard': setTitle('Dashboard'); return renderDashboard(v);
+    case 'dashboard': setTitle('Today'); return renderDashboard(v);
     case 'sessions':  setTitle('Therapy Plans'); return renderPlans(v);
     case 'program':   return renderProgram(v);
     case 'cta':       setTitle('Daily At-Home'); return renderCTA(v);
@@ -115,48 +124,117 @@ async function render() {
   }
 }
 
+function greetingText() {
+  const h = new Date().getHours();
+  const word = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+  return `${word} · ${new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}`;
+}
+
 /* ---------------- Dashboard ---------------- */
 async function renderDashboard(v) {
   await loadPrograms();
-
-  // today's checklist progress
   const ctas = await getCTAs();
-  let doneToday = 0;
-  for (const c of ctas) if (await db.get(STORE.checks, `${todayISO()}|${c.id}`)) doneToday++;
+  const counts = await checkCountsByDate();
+  const doneToday = counts[todayISO()] || 0;
+  const todayPct = ctas.length ? Math.round((doneToday / ctas.length) * 100) : 0;
+  const streak = computeStreak(counts, ctas.length);
+
+  // overall attendance across all plans
+  let A = 0, M = 0, T = 0;
+  const planRows = [];
+  for (const p of state.programs) {
+    const sess = await db.byIndex(STORE.sessions, 'programId', p.id);
+    const st = stats(p, sess);
+    A += st.attended; M += st.missed; T += st.total;
+    planRows.push({ p, st });
+  }
+  const adherence = (A + M) ? Math.round((A / (A + M)) * 100) : 0;
+
+  // activity heatmap (last 12 weeks of daily-ritual completion)
+  const cells = [];
+  for (let i = 83; i >= 0; i--) {
+    const d = addDays(todayISO(), -i);
+    const frac = ctas.length ? Math.min(1, (counts[d] || 0) / ctas.length) : 0;
+    cells.push({ level: frac <= 0 ? 0 : Math.min(4, Math.ceil(frac * 4)), color: 'var(--green)', title: `${fmtDate(d)} — ${Math.round(frac * 100)}%` });
+  }
+
+  const streakBanner = `
+    <div class="streak">
+      <div class="flame-ico">${streak > 0 ? '🔥' : '🌱'}</div>
+      <div>
+        <div class="n">${streak} day${streak === 1 ? '' : 's'}</div>
+        <div class="t">${streak > 0 ? 'Daily at-home ritual streak — keep it going!' : 'Complete today’s activities to start a streak'}</div>
+      </div>
+    </div>`;
+
+  const todayCard = `
+    <div class="card stat-flex" data-act="go-cta" style="cursor:pointer">
+      <div class="ring-wrap">${ring(todayPct, 'var(--brand)', { size: 84, stroke: 11, center: `<div class="big" style="font-size:18px">${todayPct}%</div>` })}</div>
+      <div style="flex:1">
+        <h2>Today's at-home plan</h2>
+        <p class="sub" style="margin:2px 0 0">${doneToday} of ${ctas.length} activities done</p>
+      </div>
+      <div class="chev" style="color:var(--muted);font-size:24px">›</div>
+    </div>`;
+
+  const adherenceCard = (A + M) ? `
+    <div class="card">
+      <div class="stat-flex">
+        ${donut([
+          { value: A, color: 'var(--green)' },
+          { value: M, color: 'var(--red)' },
+          { value: Math.max(0, T - A - M), color: 'color-mix(in srgb, var(--muted) 22%, transparent)' },
+        ], { center: `<div class="big">${adherence}%</div><div class="lbl">attended</div>` })}
+        <div style="flex:1">
+          <h2 style="margin-bottom:10px">Attendance</h2>
+          <div class="legend">
+            <span><i style="background:var(--green)"></i>${A} attended</span>
+            <span><i style="background:var(--red)"></i>${M} missed</span>
+            <span><i style="background:color-mix(in srgb,var(--muted) 35%,transparent)"></i>${Math.max(0, T - A - M)} upcoming</span>
+          </div>
+        </div>
+      </div>
+    </div>` : '';
+
+  const heatCard = `
+    <div class="card">
+      <h2 style="margin-bottom:12px">Daily activity · last 12 weeks</h2>
+      ${heatmap(cells)}
+      <div class="hm-legend">Less
+        <i style="background:color-mix(in srgb,var(--muted) 16%,transparent)"></i>
+        <i style="background:var(--green);opacity:.45"></i>
+        <i style="background:var(--green);opacity:.7"></i>
+        <i style="background:var(--green)"></i>More</div>
+    </div>`;
 
   let plansHtml = '';
   if (!state.programs.length) {
-    plansHtml = `<div class="empty"><div class="big">📅</div>
-      <p>No therapy plans yet.</p>
-      <button class="btn" data-act="new-plan">Create your first plan</button></div>`;
+    plansHtml = `<div class="empty"><div class="big">🧩</div>
+      <p>No therapy plans yet.<br>Add OT, Speech, or ABA to begin.</p>
+      <button class="btn" data-act="new-plan" style="max-width:240px;margin:0 auto">Create your first plan</button></div>`;
   } else {
-    for (const p of state.programs) {
-      const sess = await db.byIndex(STORE.sessions, 'programId', p.id);
-      const st = stats(p, sess);
+    for (const { p, st } of planRows) {
       const pct = st.total ? Math.round((st.attended / st.total) * 100) : 0;
       const end = cycleEnd(p);
       plansHtml += `
-        <div class="card plan-card" data-act="open" data-id="${p.id}">
-          <span class="tag ${p.type}">${p.type}</span>
-          <h2>${esc(p.name)}</h2>
-          <div class="meta">Started ${fmtDate(p.cycleStart)}${end ? ` · cycle ends ${fmtDate(end)}` : ''}</div>
-          <div class="progress"><span style="width:${pct}%"></span></div>
-          <div class="progress-row">
-            <span>✅ ${st.attended} attended · ❌ ${st.missed} missed</span>
-            <span>${st.total ? `${st.attended}/${st.total}` : `${sess.length} logged`}</span>
+        <div class="card plan-card tint-${p.type}" data-act="open" data-id="${p.id}">
+          <div class="ring-wrap">${ring(pct, COLORVAR[p.type], { size: 56, stroke: 8, center: `<div class="big" style="font-size:14px">${pct}%</div>` })}</div>
+          <div class="info">
+            <span class="tag">${p.type}</span>
+            <h2>${esc(p.name)}</h2>
+            <div class="meta">${st.total ? `${st.attended}/${st.total} attended` : `${st.attended} attended`}${end ? ` · ends ${fmtDate(end)}` : ''}</div>
           </div>
+          <div class="chev">›</div>
         </div>`;
     }
   }
 
   v.innerHTML = `
-    <div class="card" data-act="go-cta" style="cursor:pointer">
-      <div class="row-between">
-        <div><h2>Today's at-home plan</h2><p class="sub" style="margin:0">${doneToday}/${ctas.length} done today</p></div>
-        <div class="pill ${doneToday === ctas.length && ctas.length ? 'yes' : 'none'}">${doneToday === ctas.length && ctas.length ? 'All done 🎉' : 'Open'}</div>
-      </div>
-      <div class="progress" style="margin-bottom:0"><span style="width:${ctas.length ? (doneToday / ctas.length) * 100 : 0}%"></span></div>
-    </div>
+    <p class="greeting">${greetingText()}</p>
+    ${streakBanner}
+    ${todayCard}
+    ${adherenceCard}
+    ${heatCard}
     <div class="section-title">Your therapy plans</div>
     ${plansHtml}`;
 }
@@ -167,24 +245,30 @@ async function renderPlans(v) {
   if (!state.programs.length) {
     v.innerHTML = `<div class="empty"><div class="big">🧩</div>
       <p>No therapy plans yet.<br>Tap + to add OT, Speech, or ABA.</p>
-      <button class="btn" data-act="new-plan">New plan</button></div>`;
+      <button class="btn" data-act="new-plan" style="max-width:240px;margin:0 auto">New plan</button></div>`;
     return;
   }
   let html = '';
   for (const p of state.programs) {
     const sess = await db.byIndex(STORE.sessions, 'programId', p.id);
     const st = stats(p, sess);
+    const pct = st.total ? Math.round((st.attended / st.total) * 100) : 0;
     html += `
-      <div class="card plan-card" data-act="open" data-id="${p.id}">
-        <span class="tag ${p.type}">${p.type}</span>
-        <h2>${esc(p.name)}</h2>
-        <div class="meta">${st.total ? `${st.attended}/${st.total} attended` : `${sess.length} sessions logged`} · started ${fmtDate(p.cycleStart)}</div>
+      <div class="card plan-card tint-${p.type}" data-act="open" data-id="${p.id}">
+        <div class="ring-wrap">${ring(pct, COLORVAR[p.type], { size: 58, stroke: 8, center: `<div class="big" style="font-size:14px">${pct}%</div>` })}</div>
+        <div class="info">
+          <span class="tag">${p.type}</span>
+          <h2>${esc(p.name)}</h2>
+          <div class="meta">started ${fmtDate(p.cycleStart)}</div>
+          <div class="counts"><span>✅ ${st.attended}</span><span>❌ ${st.missed}</span><span>⏳ ${st.remaining}</span></div>
+        </div>
+        <div class="chev">›</div>
       </div>`;
   }
   v.innerHTML = html;
 }
 
-/* ---------------- Single program (session grid) ---------------- */
+/* ---------------- Single program (timeline) ---------------- */
 async function renderProgram(v) {
   const p = await db.get(STORE.programs, state.programId);
   if (!p) { state.view = 'sessions'; return render(); }
@@ -193,44 +277,52 @@ async function renderProgram(v) {
   const st = stats(p, state.sessions);
   const end = cycleEnd(p);
   const monthly = TYPES[p.type].mode === 'monthly';
+  const pct = st.total ? Math.round((st.attended / st.total) * 100) : 0;
 
-  const cells = state.sessions.map((s) => {
-    const label = s.status === 'attended' ? 'Yes' : s.status === 'missed' ? 'No' : '—';
-    return `<div class="sess-cell ${s.status}" data-act="session" data-id="${s.id}">
-      ${s.documents?.length ? '<span class="doc-dot">📎</span>' : ''}
-      <span class="n">#${s.number}</span>
-      <span class="s">${label}</span>
-    </div>`;
+  const items = state.sessions.map((s) => {
+    const pill = s.status === 'attended' ? '<span class="pill yes">Yes · attended</span>'
+      : s.status === 'missed' ? '<span class="pill no">No · missed</span>'
+      : '<span class="pill none">Not logged</span>';
+    return `
+      <div class="tl-item ${s.status}">
+        <div class="tl-node">${s.status === 'attended' ? '✓' : s.status === 'missed' ? '✕' : s.number}</div>
+        <div class="tl-card" data-act="session" data-id="${s.id}">
+          <div class="tl-top"><span class="tl-num">Session ${s.number}</span>${pill}</div>
+          ${s.date ? `<div class="tl-date">${fmtDate(s.date)}</div>` : '<div class="tl-date">Tap to set date & status</div>'}
+          ${s.notes ? `<div class="tl-notes">${esc(s.notes)}</div>` : ''}
+          ${s.documents?.length ? `<div class="tl-docs">📎 ${s.documents.length} document${s.documents.length === 1 ? '' : 's'}</div>` : ''}
+        </div>
+      </div>`;
   }).join('');
 
   v.innerHTML = `
-    <button class="btn secondary small" data-act="back" style="margin-bottom:12px">‹ All plans</button>
-    <div class="card">
-      <span class="tag ${p.type}">${p.type}</span>
-      <h2>${esc(p.name)}</h2>
-      <div class="meta">Started ${fmtDate(p.cycleStart)}${end ? ` · cycle ends ${fmtDate(end)}` : ''}</div>
-      <div class="progress"><span style="width:${st.total ? (st.attended / st.total) * 100 : 0}%"></span></div>
-      <div class="progress-row">
-        <span>✅ ${st.attended} · ❌ ${st.missed} · ⏳ ${st.total ? st.total - st.done : 0} left</span>
-        <span>${st.total ? `${st.attended}/${st.total}` : `${state.sessions.length} sessions`}</span>
+    <button class="btn secondary small" data-act="back" style="margin:4px 0 14px">‹ All plans</button>
+    <div class="card stat-flex tint-${p.type}">
+      <div class="ring-wrap">${ring(pct, COLORVAR[p.type], { size: 92, stroke: 12, center: `<div class="big" style="font-size:20px">${pct}%</div><div class="lbl">done</div>` })}</div>
+      <div style="flex:1">
+        <span class="tag">${p.type}</span>
+        <h2 style="margin-top:6px">${esc(p.name)}</h2>
+        <div class="meta" style="color:var(--muted);font-size:12.5px;margin-top:4px">Started ${fmtDate(p.cycleStart)}${end ? `<br>Cycle ends ${fmtDate(end)}` : ''}</div>
+        <div class="counts" style="display:flex;gap:12px;font-size:13px;color:var(--ink-soft);margin-top:8px">
+          <span>✅ ${st.attended}</span><span>❌ ${st.missed}</span><span>⏳ ${st.remaining}</span>
+        </div>
       </div>
     </div>
-    <div class="section-title">Sessions — tap to log attendance & attach documents</div>
-    <div class="sess-grid">${cells}</div>
-    <div style="margin-top:16px" class="btn-row">
-      ${monthly ? `<button class="btn secondary" data-act="add-session">+ Add session</button>
-                   <button class="btn secondary" data-act="next-cycle">Start next month →</button>` : ''}
-    </div>
-    <button class="btn danger" data-act="del-plan" style="margin-top:20px">Delete this plan</button>`;
+    <div class="section-title">Session timeline</div>
+    <div class="timeline">${items}</div>
+    ${monthly ? `<div class="btn-row" style="margin-top:8px">
+        <button class="btn secondary" data-act="add-session">+ Add session</button>
+        <button class="btn secondary" data-act="next-cycle">Next month →</button>
+      </div>` : ''}
+    <button class="btn danger" data-act="del-plan" style="margin-top:22px">Delete this plan</button>`;
 }
 
 /* ---------------- Daily CTA ---------------- */
-async function getCTAs() {
-  const custom = (await db.get(STORE.kv, 'customCtas'))?.value || [];
-  return [...DEFAULT_CTAS, ...custom];
-}
 async function renderCTA(v) {
   const ctas = await getCTAs();
+  const counts = await checkCountsByDate();
+  const doneToday = counts[todayISO()] || 0;
+  const pct = ctas.length ? Math.round((doneToday / ctas.length) * 100) : 0;
   let rows = '';
   for (const c of ctas) {
     const done = !!(await db.get(STORE.checks, `${todayISO()}|${c.id}`));
@@ -242,11 +334,12 @@ async function renderCTA(v) {
       </div>`;
   }
   v.innerHTML = `
-    <div class="card">
-      <h2>${fmtDate(todayISO())}</h2>
-      <p class="sub">Daily activities to do at home. Resets each day.</p>
-      ${rows}
+    <div class="card stat-flex">
+      <div class="ring-wrap">${ring(pct, 'var(--green)', { size: 76, stroke: 10, center: `<div class="big" style="font-size:16px">${pct}%</div>` })}</div>
+      <div style="flex:1"><h2>${doneToday === ctas.length && ctas.length ? 'All done today 🎉' : "Today's activities"}</h2>
+        <p class="sub" style="margin:2px 0 0">${doneToday}/${ctas.length} complete · resets each day</p></div>
     </div>
+    <div class="card">${rows}</div>
     <button class="btn secondary" data-act="add-cta">+ Add my own activity</button>`;
 }
 
@@ -257,9 +350,8 @@ async function getResources() {
 }
 async function renderResources(v) {
   const res = await getResources();
-  const cats = ['OT', 'Speech', 'ABA', 'General'];
   let html = '';
-  for (const cat of cats) {
+  for (const cat of ['OT', 'Speech', 'ABA', 'General']) {
     const items = res.filter((r) => r.cat === cat);
     if (!items.length) continue;
     html += `<div class="section-title">${cat}</div>`;
@@ -282,8 +374,7 @@ async function renderResources(v) {
    ============================================================ */
 function openModal(innerHTML) {
   const root = el('modal-root');
-  root.innerHTML = `<div class="modal-overlay"><div class="modal">
-    <div class="modal-handle"></div>${innerHTML}</div></div>`;
+  root.innerHTML = `<div class="modal-overlay"><div class="modal"><div class="modal-handle"></div>${innerHTML}</div></div>`;
   root.querySelector('.modal-overlay').addEventListener('click', (e) => {
     if (e.target.classList.contains('modal-overlay')) closeModal();
   });
@@ -297,7 +388,7 @@ function newPlanModal() {
     <p class="modal-sub">OT & Speech run 24 sessions. ABA runs a monthly cycle.</p>
     <label class="field"><span>Type</span>
       <div class="seg" id="type-seg">
-        <button data-type="OT" class="active OT">OT</button>
+        <button data-type="OT" class="on-OT">OT</button>
         <button data-type="Speech">Speech</button>
         <button data-type="ABA">ABA</button>
       </div>
@@ -310,19 +401,17 @@ function newPlanModal() {
       <button class="btn secondary" data-act="cancel">Cancel</button>
       <button class="btn" id="save-plan">Create plan</button>
     </div>`);
-
   let selected = 'OT';
   el('type-seg').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-type]'); if (!b) return;
     selected = b.dataset.type;
     el('type-seg').querySelectorAll('button').forEach((x) => x.className = '');
-    b.className = `active ${selected}`;
+    b.className = `on-${selected}`;
   });
   el('save-plan').addEventListener('click', async () => {
     const cycleStart = el('plan-date').value || todayISO();
     const p = await createProgram({ type: selected, name: el('plan-name').value.trim(), cycleStart });
-    closeModal();
-    state.view = 'program'; state.programId = p.id; render();
+    closeModal(); state.view = 'program'; state.programId = p.id; render();
   });
 }
 
@@ -338,27 +427,23 @@ async function sessionModal(id) {
     </div>`).join('') || '<p class="muted center" style="padding:8px">No documents yet</p>';
 
   openModal(`
-    <h2>Session #${s.number}</h2>
+    <h2>Session ${s.number}</h2>
     <p class="modal-sub">Mark attendance, add notes, and attach documents.</p>
-
     <label class="field"><span>Status</span>
       <div class="seg" id="status-seg">
-        <button data-status="attended" class="${s.status === 'attended' ? 'active OT' : ''}" style="${s.status === 'attended' ? 'background:var(--green);border-color:var(--green);color:#fff' : ''}">Attended · Yes</button>
-        <button data-status="missed" class="${s.status === 'missed' ? 'active' : ''}" style="${s.status === 'missed' ? 'background:var(--red);border-color:var(--red);color:#fff' : ''}">Missed · No</button>
+        <button data-status="attended" class="${s.status === 'attended' ? 'on-green' : ''}">Attended · Yes</button>
+        <button data-status="missed" class="${s.status === 'missed' ? 'on-red' : ''}">Missed · No</button>
       </div>
     </label>
-    <label class="field"><span>Date</span>
-      <input id="s-date" type="date" value="${s.date || ''}" /></label>
+    <label class="field"><span>Date</span><input id="s-date" type="date" value="${s.date || ''}" /></label>
     <label class="field"><span>Notes</span>
       <textarea id="s-notes" placeholder="What was worked on, progress, homework…">${esc(s.notes)}</textarea></label>
-
     <div class="section-title" style="margin-left:0">Documents</div>
     <div id="doc-list">${docs}</div>
     <label class="btn secondary" style="margin-top:8px;cursor:pointer">
       📎 Upload document / photo
       <input id="doc-input" type="file" accept="image/*,application/pdf,.doc,.docx" multiple hidden />
     </label>
-
     <div class="btn-row" style="margin-top:16px">
       <button class="btn secondary" data-act="cancel">Close</button>
       <button class="btn" id="save-session">Save</button>
@@ -367,63 +452,44 @@ async function sessionModal(id) {
   let status = s.status;
   el('status-seg').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-status]'); if (!b) return;
-    status = (status === b.dataset.status) ? 'scheduled' : b.dataset.status; // tap again to clear
-    el('status-seg').querySelectorAll('button').forEach((x) => { x.className = ''; x.removeAttribute('style'); });
-    if (status === 'attended') b.style.cssText = 'background:var(--green);border-color:var(--green);color:#fff';
-    if (status === 'missed') b.style.cssText = 'background:var(--red);border-color:var(--red);color:#fff';
+    status = (status === b.dataset.status) ? 'scheduled' : b.dataset.status;
+    el('status-seg').querySelectorAll('button').forEach((x) => x.className = '');
+    if (status === 'attended') b.className = 'on-green';
+    if (status === 'missed') b.className = 'on-red';
   });
-
-  // file upload
   el('doc-input').addEventListener('change', async (e) => {
     for (const file of e.target.files) {
       s.documents = s.documents || [];
       s.documents.push({ id: uid(), name: file.name, type: file.type, size: file.size, blob: file });
     }
-    await db.put(STORE.sessions, s);
-    sessionModal(id); // re-render modal
+    await db.put(STORE.sessions, s); sessionModal(id);
   });
-
   el('doc-list').addEventListener('click', async (e) => {
     const view = e.target.closest('[data-act="view-doc"]');
     const del = e.target.closest('[data-act="del-doc"]');
-    if (view) {
-      const d = s.documents[+view.dataset.i];
-      const url = URL.createObjectURL(d.blob);
-      window.open(url, '_blank');
-    }
-    if (del) {
-      s.documents.splice(+del.dataset.i, 1);
-      await db.put(STORE.sessions, s);
-      sessionModal(id);
-    }
+    if (view) window.open(URL.createObjectURL(s.documents[+view.dataset.i].blob), '_blank');
+    if (del) { s.documents.splice(+del.dataset.i, 1); await db.put(STORE.sessions, s); sessionModal(id); }
   });
-
   el('save-session').addEventListener('click', async () => {
-    s.status = status;
-    s.date = el('s-date').value;
-    s.notes = el('s-notes').value;
+    s.status = status; s.date = el('s-date').value; s.notes = el('s-notes').value;
     if (status !== 'scheduled' && !s.date) s.date = todayISO();
-    await db.put(STORE.sessions, s);
-    closeModal();
-    render();
+    await db.put(STORE.sessions, s); closeModal(); render();
   });
 }
 
-/* ---------------- Add custom CTA / resource modals ---------------- */
+/* ---------------- Add custom CTA / resource ---------------- */
 function addCtaModal() {
   openModal(`
     <h2>Add daily activity</h2>
     <label class="field"><span>Activity</span><input id="cta-text" placeholder="e.g. 10 min sensory play" /></label>
     <label class="field"><span>Area</span>
       <select id="cta-cat"><option>General</option><option>OT</option><option>Speech</option><option>ABA</option></select></label>
-    <div class="btn-row"><button class="btn secondary" data-act="cancel">Cancel</button>
-      <button class="btn" id="save-cta">Add</button></div>`);
+    <div class="btn-row"><button class="btn secondary" data-act="cancel">Cancel</button><button class="btn" id="save-cta">Add</button></div>`);
   el('save-cta').addEventListener('click', async () => {
     const text = el('cta-text').value.trim(); if (!text) return;
     const cur = (await db.get(STORE.kv, 'customCtas'))?.value || [];
     cur.push({ id: 'cta-' + uid(), cat: el('cta-cat').value, text });
-    await db.put(STORE.kv, { key: 'customCtas', value: cur });
-    closeModal(); render();
+    await db.put(STORE.kv, { key: 'customCtas', value: cur }); closeModal(); render();
   });
 }
 function addResModal() {
@@ -434,26 +500,23 @@ function addResModal() {
     <label class="field"><span>Note</span><input id="r-desc" /></label>
     <label class="field"><span>Area</span>
       <select id="r-cat"><option>General</option><option>OT</option><option>Speech</option><option>ABA</option></select></label>
-    <div class="btn-row"><button class="btn secondary" data-act="cancel">Cancel</button>
-      <button class="btn" id="save-res">Add</button></div>`);
+    <div class="btn-row"><button class="btn secondary" data-act="cancel">Cancel</button><button class="btn" id="save-res">Add</button></div>`);
   el('save-res').addEventListener('click', async () => {
     const title = el('r-title').value.trim(), url = el('r-url').value.trim();
     if (!title || !url) return;
     const cur = (await db.get(STORE.kv, 'customResources'))?.value || [];
     cur.push({ id: 'res-' + uid(), cat: el('r-cat').value, title, url, desc: el('r-desc').value.trim() });
-    await db.put(STORE.kv, { key: 'customResources', value: cur });
-    closeModal(); render();
+    await db.put(STORE.kv, { key: 'customResources', value: cur }); closeModal(); render();
   });
 }
 
 /* ============================================================
-   Event wiring (delegation)
+   Event wiring
    ============================================================ */
 document.querySelector('.tabbar').addEventListener('click', (e) => {
   const b = e.target.closest('.tab'); if (!b) return;
   state.view = b.dataset.view; state.programId = null; render();
 });
-
 el('add-btn').addEventListener('click', newPlanModal);
 
 document.addEventListener('click', async (e) => {
@@ -471,39 +534,31 @@ document.addEventListener('click', async (e) => {
     case 'toggle-cta': {
       const key = `${todayISO()}|${t.dataset.id}`;
       const cur = await db.get(STORE.checks, key);
-      if (cur) await db.delete(STORE.checks, key);
-      else await db.put(STORE.checks, { key, done: true });
+      if (cur) await db.delete(STORE.checks, key); else await db.put(STORE.checks, { key, done: true });
       return render();
     }
     case 'add-session': {
       const sess = await db.byIndex(STORE.sessions, 'programId', state.programId);
-      const n = sess.length + 1;
-      await db.put(STORE.sessions, blankSession(state.programId, n, todayISO()));
+      await db.put(STORE.sessions, blankSession(state.programId, sess.length + 1, todayISO()));
       return render();
     }
     case 'next-cycle': {
       const p = await db.get(STORE.programs, state.programId);
       const next = await createProgram({ type: p.type, name: p.name, cycleStart: cycleEnd(p) });
-      state.programId = next.id;
-      return render();
+      state.programId = next.id; return render();
     }
     case 'del-plan': {
       if (confirm('Delete this plan and all its sessions & documents?')) {
-        await deleteProgram(state.programId);
-        state.view = 'sessions'; state.programId = null;
-        return render();
+        await deleteProgram(state.programId); state.view = 'sessions'; state.programId = null; return render();
       }
       return;
     }
   }
 });
 
-/* ============================================================
-   Service worker (offline support)
-   ============================================================ */
+/* service worker (offline support) */
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 }
 
-/* boot */
 render();
