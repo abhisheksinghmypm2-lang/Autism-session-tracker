@@ -1,5 +1,5 @@
 // Simple offline cache. Bump CACHE when you change app files.
-const CACHE = 'session-tracker-v3';
+const CACHE = 'session-tracker-v4';
 const ASSETS = [
   './',
   './index.html',
@@ -8,6 +8,8 @@ const ASSETS = [
   './js/db.js',
   './js/content.js',
   './js/charts.js',
+  './js/firebase-config.js',
+  './js/cloud.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',

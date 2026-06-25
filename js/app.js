@@ -1,6 +1,14 @@
-import { db, STORE, uid } from './db.js';
+import { db as localDB, STORE, uid } from './db.js';
 import { DEFAULT_CTAS, DEFAULT_RESOURCES, CAT_COLORS } from './content.js';
 import { donut, ring, heatmap } from './charts.js';
+import { CLOUD_ENABLED, firebaseConfig } from './firebase-config.js';
+import { createCloud } from './cloud.js';
+
+// Active data layer: local IndexedDB by default, swapped to the cloud
+// adapter when a user signs in (see cloud init at the bottom of this file).
+let DB = localDB;
+let cloud = null;
+let currentUser = null;
 
 /* ============================================================
    Session-type configuration
@@ -66,21 +74,21 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<
    Data operations
    ============================================================ */
 async function loadPrograms() {
-  state.programs = (await db.getAll(STORE.programs))
+  state.programs = (await DB.getAll(STORE.programs))
     .map((p) => ({ track: 'Institute', ...p }))   // migrate older plans with no track
     .sort((a, b) => b.createdAt - a.createdAt);
 }
 async function loadSessions(programId) {
-  state.sessions = (await db.byIndex(STORE.sessions, 'programId', programId))
+  state.sessions = (await DB.byIndex(STORE.sessions, 'programId', programId))
     .sort((a, b) => (a.number || 0) - (b.number || 0));
 }
 async function createProgram({ type, name, cycleStart, track }) {
   const program = { id: uid(), type, track: track || 'Institute', name: name || TYPES[type].label, cycleStart, createdAt: Date.now() };
-  await db.put(STORE.programs, program);
+  await DB.put(STORE.programs, program);
   if (TYPES[type].mode === 'fixed') {
-    for (let i = 1; i <= TYPES[type].total; i++) await db.put(STORE.sessions, blankSession(program.id, i));
+    for (let i = 1; i <= TYPES[type].total; i++) await DB.put(STORE.sessions, blankSession(program.id, i));
   } else {
-    await db.put(STORE.sessions, blankSession(program.id, 1, cycleStart));
+    await DB.put(STORE.sessions, blankSession(program.id, 1, cycleStart));
   }
   return program;
 }
@@ -88,9 +96,9 @@ function blankSession(programId, number, date = '') {
   return { id: uid(), programId, number, date, status: 'scheduled', notes: '', documents: [] };
 }
 async function deleteProgram(id) {
-  const sess = await db.byIndex(STORE.sessions, 'programId', id);
-  for (const s of sess) await db.delete(STORE.sessions, s.id);
-  await db.delete(STORE.programs, id);
+  const sess = await DB.byIndex(STORE.sessions, 'programId', id);
+  for (const s of sess) await DB.delete(STORE.sessions, s.id);
+  await DB.delete(STORE.programs, id);
 }
 function cycleEnd(program) {
   return TYPES[program.type].mode === 'monthly' ? addMonths(program.cycleStart, 1) : null;
@@ -104,11 +112,11 @@ function stats(program, sessions) {
 
 /* ---------------- daily-ritual analytics ---------------- */
 async function getCTAs() {
-  const custom = (await db.get(STORE.kv, 'customCtas'))?.value || [];
+  const custom = (await DB.get(STORE.kv, 'customCtas'))?.value || [];
   return [...DEFAULT_CTAS, ...custom];
 }
 async function checkCountsByDate() {
-  const all = await db.getAll(STORE.checks);
+  const all = await DB.getAll(STORE.checks);
   const map = {};
   for (const c of all) { const d = c.key.split('|')[0]; map[d] = (map[d] || 0) + 1; }
   return map;
@@ -174,7 +182,7 @@ async function renderDashboard(v) {
 
   const rows = [];
   for (const p of state.programs) {
-    rows.push({ p, st: stats(p, await db.byIndex(STORE.sessions, 'programId', p.id)) });
+    rows.push({ p, st: stats(p, await DB.byIndex(STORE.sessions, 'programId', p.id)) });
   }
   const inst = rows.filter((r) => r.p.track === 'Institute');
   const home = rows.filter((r) => r.p.track === 'Home');
@@ -269,7 +277,7 @@ async function renderPlans(v) {
   }
   const rows = [];
   for (const p of state.programs) {
-    const st = stats(p, await db.byIndex(STORE.sessions, 'programId', p.id));
+    const st = stats(p, await DB.byIndex(STORE.sessions, 'programId', p.id));
     rows.push({ p, st });
   }
   let html = '';
@@ -297,7 +305,7 @@ async function renderPlans(v) {
 
 /* ---------------- Single program (timeline + per-plan chart) ---------------- */
 async function renderProgram(v) {
-  const p = { track: 'Institute', ...(await db.get(STORE.programs, state.programId)) };
+  const p = { track: 'Institute', ...(await DB.get(STORE.programs, state.programId)) };
   if (!p.id) { state.view = 'sessions'; return render(); }
   await loadSessions(p.id);
   setTitle(p.name);
@@ -367,7 +375,7 @@ async function renderCTA(v) {
   const pct = ctas.length ? Math.round((doneToday / ctas.length) * 100) : 0;
   let rows = '';
   for (const c of ctas) {
-    const done = !!(await db.get(STORE.checks, `${todayISO()}|${c.id}`));
+    const done = !!(await DB.get(STORE.checks, `${todayISO()}|${c.id}`));
     rows += `
       <div class="check-item ${done ? 'done' : ''}" data-act="toggle-cta" data-id="${c.id}">
         <div class="check-box">${done ? '✓' : ''}</div>
@@ -387,7 +395,7 @@ async function renderCTA(v) {
 
 /* ---------------- Resources ---------------- */
 async function getResources() {
-  const custom = (await db.get(STORE.kv, 'customResources'))?.value || [];
+  const custom = (await DB.get(STORE.kv, 'customResources'))?.value || [];
   return [...DEFAULT_RESOURCES, ...custom];
 }
 async function renderResources(v) {
@@ -470,9 +478,22 @@ function newPlanModal(defaultTrack = 'Institute') {
   });
 }
 
+/* ---------------- documents: cloud Storage when signed in, local blob otherwise ---------------- */
+async function saveDocFile(file) {
+  if (cloud && currentUser) return cloud.uploadDocument(file);
+  return { id: uid(), name: file.name, type: file.type, size: file.size, blob: file };
+}
+function openDoc(d) {
+  if (d?.url) window.open(d.url, '_blank');
+  else if (d?.blob) window.open(URL.createObjectURL(d.blob), '_blank');
+}
+async function removeDoc(d) {
+  if (d?.path && cloud) await cloud.deleteDocument(d.path);
+}
+
 /* ---------------- Session detail modal ---------------- */
 async function sessionModal(id) {
-  const s = await db.get(STORE.sessions, id);
+  const s = await DB.get(STORE.sessions, id);
   if (!s) return;
   const docs = (s.documents || []).map((d, i) => `
     <div class="doc-row">
@@ -515,20 +536,20 @@ async function sessionModal(id) {
   el('doc-input').addEventListener('change', async (e) => {
     for (const file of e.target.files) {
       s.documents = s.documents || [];
-      s.documents.push({ id: uid(), name: file.name, type: file.type, size: file.size, blob: file });
+      s.documents.push(await saveDocFile(file));
     }
-    await db.put(STORE.sessions, s); sessionModal(id);
+    await DB.put(STORE.sessions, s); sessionModal(id);
   });
   el('doc-list').addEventListener('click', async (e) => {
     const view = e.target.closest('[data-act="view-doc"]');
     const del = e.target.closest('[data-act="del-doc"]');
-    if (view) window.open(URL.createObjectURL(s.documents[+view.dataset.i].blob), '_blank');
-    if (del) { s.documents.splice(+del.dataset.i, 1); await db.put(STORE.sessions, s); sessionModal(id); }
+    if (view) openDoc(s.documents[+view.dataset.i]);
+    if (del) { await removeDoc(s.documents[+del.dataset.i]); s.documents.splice(+del.dataset.i, 1); await DB.put(STORE.sessions, s); sessionModal(id); }
   });
   el('save-session').addEventListener('click', async () => {
     s.status = status; s.date = el('s-date').value; s.notes = el('s-notes').value;
     if (status !== 'scheduled' && !s.date) s.date = todayISO();
-    await db.put(STORE.sessions, s); closeModal(); render();
+    await DB.put(STORE.sessions, s); closeModal(); render();
   });
 }
 
@@ -542,9 +563,9 @@ function addCtaModal() {
     <div class="btn-row"><button class="btn secondary" data-act="cancel">Cancel</button><button class="btn" id="save-cta">Add</button></div>`);
   el('save-cta').addEventListener('click', async () => {
     const text = el('cta-text').value.trim(); if (!text) return;
-    const cur = (await db.get(STORE.kv, 'customCtas'))?.value || [];
+    const cur = (await DB.get(STORE.kv, 'customCtas'))?.value || [];
     cur.push({ id: 'cta-' + uid(), cat: el('cta-cat').value, text });
-    await db.put(STORE.kv, { key: 'customCtas', value: cur }); closeModal(); render();
+    await DB.put(STORE.kv, { key: 'customCtas', value: cur }); closeModal(); render();
   });
 }
 function addResModal() {
@@ -559,17 +580,17 @@ function addResModal() {
   el('save-res').addEventListener('click', async () => {
     const title = el('r-title').value.trim(), url = el('r-url').value.trim();
     if (!title || !url) return;
-    const cur = (await db.get(STORE.kv, 'customResources'))?.value || [];
+    const cur = (await DB.get(STORE.kv, 'customResources'))?.value || [];
     cur.push({ id: 'res-' + uid(), cat: el('r-cat').value, title, url, desc: el('r-desc').value.trim() });
-    await db.put(STORE.kv, { key: 'customResources', value: cur }); closeModal(); render();
+    await DB.put(STORE.kv, { key: 'customResources', value: cur }); closeModal(); render();
   });
 }
 
 /* ============================================================
    Settings: backup / restore + reminders
    ============================================================ */
-const getSettings = async () => (await db.get(STORE.kv, 'settings'))?.value || {};
-const saveSettings = (s) => db.put(STORE.kv, { key: 'settings', value: s });
+const getSettings = async () => (await DB.get(STORE.kv, 'settings'))?.value || {};
+const saveSettings = (s) => DB.put(STORE.kv, { key: 'settings', value: s });
 
 function blobToDataUrl(blob) {
   return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
@@ -581,10 +602,10 @@ function downloadBlob(blob, name) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 async function exportData() {
-  const programs = await db.getAll(STORE.programs);
-  const sessions = await db.getAll(STORE.sessions);
-  const checks = await db.getAll(STORE.checks);
-  const kv = await db.getAll(STORE.kv);
+  const programs = await DB.getAll(STORE.programs);
+  const sessions = await DB.getAll(STORE.sessions);
+  const checks = await DB.getAll(STORE.checks);
+  const kv = await DB.getAll(STORE.kv);
   for (const s of sessions) {
     if (s.documents) for (const d of s.documents) {
       if (d.blob) { d.dataUrl = await blobToDataUrl(d.blob); delete d.blob; }
@@ -597,16 +618,16 @@ async function importData(file) {
   const data = JSON.parse(await file.text());
   if (data.app !== 'session-tracker') { alert('That file is not a Session Tracker backup.'); return; }
   if (!confirm('Restore this backup? It will REPLACE all current data on this device.')) return;
-  for (const store of [STORE.programs, STORE.sessions, STORE.checks, STORE.kv]) await db.clear(store);
-  for (const p of data.programs || []) await db.put(STORE.programs, p);
+  for (const store of [STORE.programs, STORE.sessions, STORE.checks, STORE.kv]) await DB.clear(store);
+  for (const p of data.programs || []) await DB.put(STORE.programs, p);
   for (const s of data.sessions || []) {
     if (s.documents) for (const d of s.documents) {
       if (d.dataUrl) { d.blob = await (await fetch(d.dataUrl)).blob(); delete d.dataUrl; }
     }
-    await db.put(STORE.sessions, s);
+    await DB.put(STORE.sessions, s);
   }
-  for (const c of data.checks || []) await db.put(STORE.checks, c);
-  for (const k of data.kv || []) await db.put(STORE.kv, k);
+  for (const c of data.checks || []) await DB.put(STORE.checks, c);
+  for (const k of data.kv || []) await DB.put(STORE.kv, k);
   closeModal(); alert('Backup restored.'); state.view = 'dashboard'; render();
 }
 
@@ -616,7 +637,10 @@ async function settingsModal() {
     <h2>Settings</h2>
     <p class="modal-sub">Your data is stored privately on this device.</p>
 
-    <div class="section-title" style="margin-left:0">${ic('flame')}Daily reminder</div>
+    <div class="section-title" style="margin-left:0">${ic('home')}Account & sync</div>
+    ${cloudSyncHtml()}
+
+    <div class="section-title" style="margin-left:0;margin-top:22px">${ic('flame')}Daily reminder</div>
     <div class="settings-row">
       <div><div style="font-weight:600">Remind me</div><div class="muted" style="font-size:12.5px">Nudge to do today's at-home activities</div></div>
       <input type="checkbox" class="switch" id="rem-enable" ${s.reminderEnabled ? 'checked' : ''}>
@@ -658,6 +682,46 @@ async function settingsModal() {
   });
   el('do-export').addEventListener('click', exportData);
   el('import-file').addEventListener('change', (e) => { if (e.target.files[0]) importData(e.target.files[0]); });
+  wireCloudSync();
+}
+
+/* ---------------- Account & sync UI ---------------- */
+function cloudSyncHtml() {
+  if (!CLOUD_ENABLED || !cloud) {
+    return `<p class="muted" style="font-size:12.5px;margin:0 0 4px">Cloud sync is off — your data stays on this device only. To sync across devices and share with another caregiver, follow “Cloud sync setup” in the README, then turn it on.</p>`;
+  }
+  if (currentUser) {
+    return `
+      <div class="settings-row">
+        <div><div style="font-weight:600">Signed in</div><div class="muted" style="font-size:12.5px">${esc(currentUser.email)}</div></div>
+        <span class="pill yes">Synced ✓</span>
+      </div>
+      <p class="muted" style="font-size:12px;margin:8px 0 10px">Your data syncs automatically across every device signed in to this account.</p>
+      <button class="btn secondary" id="cloud-signout">Sign out</button>`;
+  }
+  return `
+    <p class="muted" style="font-size:12.5px;margin:0 0 10px">Sign in to sync across devices. Use the same email & password on each phone (or for each caregiver) to share the same data.</p>
+    <label class="field"><span>Email</span><input id="cloud-email" type="email" autocomplete="username" placeholder="you@example.com"></label>
+    <label class="field"><span>Password</span><input id="cloud-pass" type="password" autocomplete="current-password" placeholder="at least 6 characters"></label>
+    <div class="btn-row">
+      <button class="btn secondary" id="cloud-create">Create account</button>
+      <button class="btn" id="cloud-signin">Sign in</button>
+    </div>`;
+}
+
+function wireCloudSync() {
+  if (!CLOUD_ENABLED || !cloud) return;
+  const out = el('cloud-signout');
+  if (out) { out.addEventListener('click', async () => { await cloud.signOutUser(); closeModal(); }); return; }
+  const run = async (fn) => {
+    const email = el('cloud-email')?.value.trim();
+    const pass = el('cloud-pass')?.value;
+    if (!email || !pass) { alert('Enter an email and password.'); return; }
+    try { await fn(email, pass); closeModal(); }
+    catch (err) { alert(err?.message?.replace('Firebase: ', '') || 'Sign-in failed.'); }
+  };
+  el('cloud-signin')?.addEventListener('click', () => run(cloud.signIn));
+  el('cloud-create')?.addEventListener('click', () => run(cloud.signUp));
 }
 
 async function showReminder(body) {
@@ -709,17 +773,17 @@ document.addEventListener('click', async (e) => {
     case 'add-res': return addResModal();
     case 'toggle-cta': {
       const key = `${todayISO()}|${t.dataset.id}`;
-      const cur = await db.get(STORE.checks, key);
-      if (cur) await db.delete(STORE.checks, key); else await db.put(STORE.checks, { key, done: true });
+      const cur = await DB.get(STORE.checks, key);
+      if (cur) await DB.delete(STORE.checks, key); else await DB.put(STORE.checks, { key, done: true });
       return render();
     }
     case 'add-session': {
-      const sess = await db.byIndex(STORE.sessions, 'programId', state.programId);
-      await db.put(STORE.sessions, blankSession(state.programId, sess.length + 1, todayISO()));
+      const sess = await DB.byIndex(STORE.sessions, 'programId', state.programId);
+      await DB.put(STORE.sessions, blankSession(state.programId, sess.length + 1, todayISO()));
       return render();
     }
     case 'next-cycle': {
-      const p = await db.get(STORE.programs, state.programId);
+      const p = await DB.get(STORE.programs, state.programId);
       const next = await createProgram({ type: p.type, track: p.track, name: p.name, cycleStart: cycleEnd(p) });
       state.programId = next.id; return render();
     }
@@ -732,6 +796,45 @@ document.addEventListener('click', async (e) => {
   }
 });
 
+/* ============================================================
+   Cloud sync init (optional) + first-time migration
+   ============================================================ */
+async function migrateLocalToCloud() {
+  const cloudPrograms = await cloud.db.getAll(STORE.programs);
+  if (cloudPrograms.length) return;                       // account already has data
+  const localPrograms = await localDB.getAll(STORE.programs);
+  if (!localPrograms.length) return;                      // nothing local to move
+  if (!confirm('Upload your existing on-device data to this account so it syncs everywhere?')) return;
+
+  for (const p of localPrograms) await cloud.db.put(STORE.programs, p);
+  for (const s of await localDB.getAll(STORE.sessions)) {
+    if (s.documents) {
+      for (const d of s.documents) {
+        if (d.blob) { Object.assign(d, await cloud.uploadDocument(d.blob, d.name)); delete d.blob; }
+      }
+    }
+    await cloud.db.put(STORE.sessions, s);
+  }
+  for (const c of await localDB.getAll(STORE.checks)) await cloud.db.put(STORE.checks, c);
+  for (const k of await localDB.getAll(STORE.kv)) await cloud.db.put(STORE.kv, k);
+  alert('Done — your data is now synced to your account.');
+}
+
+async function initCloud() {
+  try {
+    cloud = await createCloud(firebaseConfig);
+    cloud.onUser(async (user) => {
+      currentUser = user;
+      DB = user ? cloud.db : localDB;
+      if (user) { try { await migrateLocalToCloud(); } catch (e) { console.warn('migration skipped', e); } }
+      render();
+    });
+  } catch (e) {
+    console.warn('Cloud sync unavailable:', e);
+    cloud = null;
+  }
+}
+
 /* service worker (offline support) */
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
@@ -743,3 +846,4 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) mayb
 setInterval(maybeRemind, 5 * 60 * 1000);
 
 render();
+if (CLOUD_ENABLED) initCloud();   // onUser callback re-renders once auth state is known

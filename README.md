@@ -108,6 +108,52 @@ All three give you an HTTPS URL you can install from in Step 3.
 
 ---
 
+## Cloud sync setup (optional)
+
+By default the app is fully on-device. Turn on **Firebase** sync to use it on multiple
+devices, get automatic cloud backup, and let more than one caregiver share the same data.
+It's free for this kind of personal use. ~10 minutes, one time.
+
+1. **Create the project** — go to <https://console.firebase.google.com>, *Add project*
+   (a name like `autism-session-tracker`; you can skip Google Analytics).
+2. **Add a Web app** — on the project overview, click the **`</>`** (Web) icon, give it a
+   nickname, *Register app*. Firebase shows a `firebaseConfig = { … }` block — keep it handy.
+   (These values are not secret; they only identify your project.)
+3. **Enable Email/Password sign-in** — left menu → *Build → Authentication → Get started →
+   Sign-in method →* enable **Email/Password**.
+4. **Create the database** — *Build → Firestore Database → Create database* (Production mode).
+   Then open the **Rules** tab and paste:
+   ```
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /users/{uid}/{document=**} {
+         allow read, write: if request.auth != null && request.auth.uid == uid;
+       }
+     }
+   }
+   ```
+5. **Enable file storage** — *Build → Storage → Get started*. Open its **Rules** tab and paste:
+   ```
+   rules_version = '2';
+   service firebase.storage {
+     match /b/{bucket}/o {
+       match /users/{uid}/{allPaths=**} {
+         allow read, write: if request.auth != null && request.auth.uid == uid;
+       }
+     }
+   }
+   ```
+6. **Authorize your site** — *Authentication → Settings → Authorized domains → Add domain* →
+   `YOUR-USERNAME.github.io` (and `localhost` for local testing).
+7. **Plug it in** — open [`js/firebase-config.js`](js/firebase-config.js), paste your config
+   values, and set `CLOUD_ENABLED = true`. Commit & push.
+8. **Sign in** — open the app → ⚙️ *Settings → Account & sync → Create account*. On your first
+   sign-in it offers to upload your existing on-device data. Sign in with the **same email &
+   password** on any other phone (or give it to another caregiver) to share the same data.
+
+> Just paste me the `firebaseConfig` block and I'll fill in step 7 for you.
+
 ## Editing the content
 
 - **Daily activities** and **resource links** live in [`js/content.js`](js/content.js) — plain lists you can edit.
