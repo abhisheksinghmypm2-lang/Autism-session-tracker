@@ -763,7 +763,8 @@ function cloudSyncHtml() {
         <div><div style="font-weight:600">Signed in</div><div class="muted" style="font-size:12.5px">${esc(currentUser.email)}</div></div>
         <span class="pill yes">Synced ✓</span>
       </div>
-      <p class="muted" style="font-size:12px;margin:8px 0 10px">Your data syncs automatically across every device signed in to this account.</p>
+      <p class="muted" style="font-size:12px;margin:8px 0 10px">Changes sync automatically across every device signed in to this account. If this device has data that isn't in the cloud yet, upload it once:</p>
+      <button class="btn" id="cloud-upload" style="margin-bottom:10px">⬆︎ Upload this device's data to the cloud</button>
       <button class="btn secondary" id="cloud-signout">Sign out</button>`;
   }
   return `
@@ -776,10 +777,38 @@ function cloudSyncHtml() {
     </div>`;
 }
 
+async function uploadThisDevice() {
+  try {
+    const programs = await localDB.getAll(STORE.programs);
+    if (!programs.length) {
+      alert('This device has no local plans to upload. (Your data may have been entered at a different web address — open that address, use Settings → Export backup, then come back here and use Import backup while signed in.)');
+      return;
+    }
+    if (!confirm(`Upload ${programs.length} plan(s) and their sessions/documents from this device to your account?`)) return;
+    for (const p of programs) await cloud.db.put(STORE.programs, p);
+    for (const s of await localDB.getAll(STORE.sessions)) {
+      if (s.documents) for (const d of s.documents) {
+        if (d.blob) { Object.assign(d, await cloud.uploadDocument(d.blob, d.name)); delete d.blob; }
+      }
+      await cloud.db.put(STORE.sessions, s);
+    }
+    for (const c of await localDB.getAll(STORE.checks)) await cloud.db.put(STORE.checks, c);
+    for (const k of await localDB.getAll(STORE.kv)) await cloud.db.put(STORE.kv, k);
+    alert('Uploaded! Your data is now in the cloud. Sign in with the same email & password on your other devices to see it.');
+    closeModal(); render();
+  } catch (e) {
+    alert('Upload failed: ' + (e?.message || e) + '\n\nIf this mentions permissions, the Firestore/Storage security rules may need to be published.');
+  }
+}
+
 function wireCloudSync() {
   if (!CLOUD_ENABLED || !cloud) return;
   const out = el('cloud-signout');
-  if (out) { out.addEventListener('click', async () => { await cloud.signOutUser(); closeModal(); }); return; }
+  if (out) {
+    el('cloud-upload')?.addEventListener('click', uploadThisDevice);
+    out.addEventListener('click', async () => { await cloud.signOutUser(); closeModal(); });
+    return;
+  }
   const run = async (fn) => {
     const email = el('cloud-email')?.value.trim();
     const pass = el('cloud-pass')?.value;
