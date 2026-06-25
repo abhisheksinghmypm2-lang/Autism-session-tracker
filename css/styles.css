@@ -267,21 +267,37 @@ textarea { min-height: 84px; resize: vertical; }
 /* ---------- Tab bar ---------- */
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
-  display: flex; height: calc(var(--tabbar-h) + var(--safe-bottom));
-  padding-bottom: var(--safe-bottom);
-  background: color-mix(in srgb, var(--card) 88%, transparent);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-  border-top: 1px solid var(--line);
+  display: flex; height: calc(var(--tabbar-h) + 8px + var(--safe-bottom));
+  padding: 6px 6px var(--safe-bottom);
+  background: color-mix(in srgb, var(--card) 80%, transparent);
+  backdrop-filter: saturate(180%) blur(22px);
+  -webkit-backdrop-filter: saturate(180%) blur(22px);
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
 }
 .tab {
   flex: 1; border: none; background: none; cursor: pointer; color: var(--muted);
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  padding: 0; -webkit-tap-highlight-color: transparent;
 }
-.tab .tab-ico { font-size: 21px; filter: grayscale(1); opacity: .55; transition: all .15s; }
-.tab .tab-lbl { font-size: 10.5px; font-weight: 600; }
+.tab .tab-ico {
+  display: flex; align-items: center; justify-content: center;
+  width: 60px; height: 30px; border-radius: 999px; position: relative;
+  transition: background .22s ease, transform .22s cubic-bezier(.2,.8,.2,1);
+}
+.tab .tab-ico svg {
+  width: 24px; height: 24px; display: block;
+  transition: stroke-width .2s ease, transform .22s cubic-bezier(.2,.8,.2,1);
+}
+.tab .tab-lbl { font-size: 11px; font-weight: 600; letter-spacing: .01em; transition: color .2s, font-weight .2s; }
+
+/* press feedback */
+.tab:active .tab-ico { transform: scale(.88); }
+
+/* active state: tinted pill + accent color + slightly bolder stroke */
 .tab.active { color: var(--brand); }
-.tab.active .tab-ico { filter: none; opacity: 1; transform: translateY(-1px); }
+.tab.active .tab-ico { background: color-mix(in srgb, var(--brand) 15%, transparent); }
+.tab.active .tab-ico svg { stroke-width: 2.3; transform: translateY(-0.5px); }
+.tab.active .tab-lbl { font-weight: 700; }
 
 /* ---------- Modal ---------- */
 .modal-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(20,18,14,.42); display: flex; align-items: flex-end; justify-content: center; }
