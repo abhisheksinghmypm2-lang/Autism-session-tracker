@@ -40,30 +40,37 @@ export async function createCloud(config) {
   const ref = (store, id) => fs.doc(db, 'users', uid, store, id);
   const docId = (v) => String(v.id ?? v.key);
 
+  // Never let a cloud call hang the UI forever (e.g. missing DB / no network).
+  const TIMEOUT = 10000;
+  const guard = (p) => Promise.race([
+    p,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('cloud-timeout')), TIMEOUT)),
+  ]);
+
   const dbApi = {
     async getAll(store) {
-      const snap = await fs.getDocs(col(store));
+      const snap = await guard(fs.getDocs(col(store)));
       return snap.docs.map((d) => d.data());
     },
     async get(store, key) {
-      const s = await fs.getDoc(ref(store, String(key)));
+      const s = await guard(fs.getDoc(ref(store, String(key))));
       return s.exists() ? s.data() : undefined;
     },
     async put(store, value) {
-      await fs.setDoc(ref(store, docId(value)), value);
+      await guard(fs.setDoc(ref(store, docId(value)), value));
       return value;
     },
     async delete(store, key) {
-      await fs.deleteDoc(ref(store, String(key)));
+      await guard(fs.deleteDoc(ref(store, String(key))));
     },
     async clear(store) {
-      const snap = await fs.getDocs(col(store));
+      const snap = await guard(fs.getDocs(col(store)));
       const batch = fs.writeBatch(db);
       snap.docs.forEach((d) => batch.delete(d.ref));
-      await batch.commit();
+      await guard(batch.commit());
     },
     async byIndex(store, field, value) {
-      const snap = await fs.getDocs(fs.query(col(store), fs.where(field, '==', value)));
+      const snap = await guard(fs.getDocs(fs.query(col(store), fs.where(field, '==', value))));
       return snap.docs.map((d) => d.data());
     },
   };

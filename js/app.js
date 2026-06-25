@@ -9,6 +9,7 @@ import { createCloud } from './cloud.js';
 let DB = localDB;
 let cloud = null;
 let currentUser = null;
+let cloudHealthy = false;
 
 /* ============================================================
    Session-type configuration
@@ -776,13 +777,18 @@ function cloudSyncHtml() {
     return `<p class="muted" style="font-size:12.5px;margin:0 0 4px">Cloud sync is off — your data stays on this device only. To sync across devices and share with another caregiver, follow “Cloud sync setup” in the README, then turn it on.</p>`;
   }
   if (currentUser) {
+    const health = cloudHealthy
+      ? '<span class="pill yes">Synced ✓</span>'
+      : '<span class="pill no">Not connected</span>';
+    const warn = cloudHealthy ? '' : `<p class="muted" style="font-size:12px;margin:0 0 10px;color:var(--red)">Can't reach the cloud database, so the app is working on this device only. This usually means the Firestore database hasn't been created yet (Firebase console → Build → Firestore Database → Create database).</p>`;
     return `
       <div class="settings-row">
         <div><div style="font-weight:600">Signed in</div><div class="muted" style="font-size:12.5px">${esc(currentUser.email)}</div></div>
-        <span class="pill yes">Synced ✓</span>
+        ${health}
       </div>
-      <p class="muted" style="font-size:12px;margin:8px 0 10px">Changes sync automatically across every device signed in to this account. If this device has data that isn't in the cloud yet, upload it once:</p>
-      <button class="btn" id="cloud-upload" style="margin-bottom:10px">⬆︎ Upload this device's data to the cloud</button>
+      ${warn}
+      <p class="muted" style="font-size:12px;margin:8px 0 10px">Changes sync across every device signed in to this account. If this device has data that isn't in the cloud yet, upload it once:</p>
+      <button class="btn" id="cloud-upload" style="margin-bottom:10px"${cloudHealthy ? '' : ' disabled'}>⬆︎ Upload this device's data to the cloud</button>
       <button class="btn secondary" id="cloud-signout">Sign out</button>`;
   }
   return `
@@ -915,15 +921,26 @@ document.addEventListener('click', async (e) => {
 /* ============================================================
    Cloud sync init (optional)
    ============================================================ */
+async function checkCloudHealth() {
+  try { await cloud.db.getAll(STORE.programs); return true; }
+  catch (e) { console.warn('Cloud unhealthy:', e?.message || e); return false; }
+}
+
 async function initCloud() {
   try {
     cloud = await createCloud(firebaseConfig);
-    cloud.onUser((user) => {
-      // Render the screen IMMEDIATELY on any auth change — never block the UI
-      // on a cloud round-trip. Uploading local data is a manual button now.
+    cloud.onUser(async (user) => {
       currentUser = user;
-      DB = user ? cloud.db : localDB;
+      // ALWAYS default to local so the UI renders instantly and never hangs.
+      DB = localDB; cloudHealthy = false;
       render();
+      if (user) {
+        // Only switch to the cloud once we've confirmed it actually responds
+        // (guards against a missing/unreachable Firestore freezing the app).
+        cloudHealthy = await checkCloudHealth();
+        DB = cloudHealthy ? cloud.db : localDB;
+        render();
+      }
     });
   } catch (e) {
     console.warn('Cloud sync unavailable:', e);
