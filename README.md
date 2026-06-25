@@ -8,13 +8,17 @@ You add it to your iPhone home screen and it behaves like a normal app (own icon
 
 ## What it does
 
+- **Two tracks** — every plan belongs to a track: **At the Institute** (sessions with your professionals) or **At Home** (practice you run yourself). The dashboard and plans list are grouped by track.
 - **Therapy plans**
   - **OT** and **Speech** → a cycle of **24 sessions** each.
   - **ABA** → a **monthly cycle** (starts on a date, ends the same date next month; tap *Start next month* to roll over).
 - **Attendance** — tap a session → mark **Attended (Yes, green)** or **Missed (No, red)**. Untapped sessions stay grey.
 - **Documents** — upload photos / PDFs / reports to a specific session (stored privately on your device).
-- **Daily dashboard** — a checklist of at-home activities (CTAs) to follow, grouped by therapy area. Resets each day.
-- **Resources dashboard** — curated links to reputable OT / Speech / ABA resources. Add your own too.
+- **Dashboards & charts** — daily-ritual **streak**, attendance **donut**, a 12-week activity **heatmap**, and a per-plan attendance **breakdown bar**.
+- **Daily at-home checklist** — activities grouped by therapy area; resets each day.
+- **Resources** — curated links to reputable OT / Speech / ABA resources. Add your own too.
+- **Reminders** — optional daily nudge to complete the at-home activities (Settings → Daily reminder). On iPhone this needs the app added to the Home Screen.
+- **Backup & restore** — Settings → export everything (including documents) to a file, and import it on another phone.
 - **Private & offline** — all data lives in your browser/app storage on the device. Nothing is sent to any server.
 
 > ⚠️ Because data is stored on the device, deleting the app or clearing site data erases it.

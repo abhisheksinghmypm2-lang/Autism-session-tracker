@@ -104,6 +104,40 @@ button { font-family: inherit; }
 .muted { color: var(--muted); }
 .center { text-align: center; }
 
+/* ---------- header actions + inline icons ---------- */
+.topbar-actions { display: flex; align-items: center; gap: 10px; }
+.icon-btn svg { width: 20px; height: 20px; }
+.icon-btn.ghost { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--ink); }
+.ic { display: inline-block; width: 18px; height: 18px; vertical-align: -4px; margin-right: 7px; color: inherit; }
+.ic svg { width: 100%; height: 100%; display: block; }
+
+/* ---------- track section header ---------- */
+.track-head {
+  display: flex; align-items: center; gap: 9px;
+  font-size: 16px; font-weight: 800; letter-spacing: -0.01em;
+  margin: 6px 4px 12px; color: var(--ink);
+}
+.track-head .ic { width: 22px; height: 22px; vertical-align: middle; margin: 0; color: var(--brand); }
+.card h2 .ic, .section-title .ic { color: var(--brand); }
+
+/* ---------- per-plan breakdown bar ---------- */
+.statbar { display: flex; height: 16px; border-radius: 999px; overflow: hidden; background: var(--bg-2); margin: 12px 0 14px; }
+.statbar span { display: block; transition: flex .3s; }
+
+/* ---------- settings ---------- */
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+.switch {
+  position: relative; width: 50px; height: 30px; flex: 0 0 auto; cursor: pointer;
+  appearance: none; -webkit-appearance: none; background: var(--line); border: none; border-radius: 999px;
+  transition: background .2s;
+}
+.switch:checked { background: var(--green); }
+.switch::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px;
+  border-radius: 50%; background: #fff; transition: transform .2s; box-shadow: 0 1px 3px rgba(0,0,0,.25);
+}
+.switch:checked::after { transform: translateX(20px); }
+
 /* ---------- Donut / ring ---------- */
 .donut { position: relative; display: inline-grid; place-items: center; }
 .donut-center {
@@ -230,6 +264,7 @@ textarea { min-height: 84px; resize: vertical; }
   background: var(--bg-2); color: var(--ink); font-weight: 700; font-size: 14px; cursor: pointer;
   transition: all .12s;
 }
+.seg button.on-brand { background: var(--brand); color: #fff; border-color: var(--brand); }
 .seg button.on-OT { background: var(--ot); color: #fff; border-color: var(--ot); }
 .seg button.on-Speech { background: var(--speech); color: #fff; border-color: var(--speech); }
 .seg button.on-ABA { background: var(--aba); color: #fff; border-color: var(--aba); }

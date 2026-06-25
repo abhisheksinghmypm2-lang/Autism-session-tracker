@@ -14,6 +14,23 @@ const TYPES = {
 };
 const COLORVAR = { OT: 'var(--ot)', Speech: 'var(--speech)', ABA: 'var(--aba)' };
 
+// Two tracks: where the work happens.
+const TRACKS = {
+  Institute: { label: 'At the Institute', icon: 'institute', blurb: 'Therapy sessions with your professionals' },
+  Home:      { label: 'At Home',          icon: 'home',      blurb: 'Practice & daily activities you run yourself' },
+};
+
+/* ---------------- inline icon set (line style, currentColor) ---------------- */
+const ICONS = {
+  institute: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9.5 21v-3a2.5 2.5 0 0 1 5 0v3"/><path d="M9 9h.01M15 9h.01"/></svg>',
+  home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.6V20a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.6"/><path d="M9.5 21v-5.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V21"/></svg>',
+  chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15v2M11.5 10v7M16 13v4M20.5 7v10"/></svg>',
+  book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.6C10.4 5.1 7.4 4.6 4 5.2v13c3.4-.6 6.4-.1 8 1.4 1.6-1.5 4.6-2 8-1.4v-13c-3.4-.6-6.4-.1-8 1.4Z"/><path d="M12 6.6v13.4"/></svg>',
+  activity: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>',
+  flame: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c1 3-1 5-2 6.5C8.5 11.7 8 13 8 14.5a4 4 0 0 0 8 0c0-1.7-1-3.2-2-4.5 2 1 3 3 3 5a5 5 0 0 1-10 0C7 11 9 7 12 3Z"/></svg>',
+};
+const ic = (name) => `<span class="ic">${ICONS[name] || ''}</span>`;
+
 /* ---------------- date helpers (all local-time, no UTC round-trips) ---------------- */
 function toISO(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -49,14 +66,16 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<
    Data operations
    ============================================================ */
 async function loadPrograms() {
-  state.programs = (await db.getAll(STORE.programs)).sort((a, b) => b.createdAt - a.createdAt);
+  state.programs = (await db.getAll(STORE.programs))
+    .map((p) => ({ track: 'Institute', ...p }))   // migrate older plans with no track
+    .sort((a, b) => b.createdAt - a.createdAt);
 }
 async function loadSessions(programId) {
   state.sessions = (await db.byIndex(STORE.sessions, 'programId', programId))
     .sort((a, b) => (a.number || 0) - (b.number || 0));
 }
-async function createProgram({ type, name, cycleStart }) {
-  const program = { id: uid(), type, name: name || TYPES[type].label, cycleStart, createdAt: Date.now() };
+async function createProgram({ type, name, cycleStart, track }) {
+  const program = { id: uid(), type, track: track || 'Institute', name: name || TYPES[type].label, cycleStart, createdAt: Date.now() };
   await db.put(STORE.programs, program);
   if (TYPES[type].mode === 'fixed') {
     for (let i = 1; i <= TYPES[type].total; i++) await db.put(STORE.sessions, blankSession(program.id, i));
@@ -88,7 +107,6 @@ async function getCTAs() {
   const custom = (await db.get(STORE.kv, 'customCtas'))?.value || [];
   return [...DEFAULT_CTAS, ...custom];
 }
-// distinct checks per date, from the whole checks store
 async function checkCountsByDate() {
   const all = await db.getAll(STORE.checks);
   const map = {};
@@ -99,7 +117,7 @@ function computeStreak(countsByDate, ctaCount) {
   if (!ctaCount) return 0;
   const complete = (iso) => (countsByDate[iso] || 0) >= ctaCount;
   let day = todayISO();
-  if (!complete(day)) day = addDays(day, -1); // today not done yet shouldn't break the streak
+  if (!complete(day)) day = addDays(day, -1);
   let n = 0;
   while (complete(day)) { n++; day = addDays(day, -1); }
   return n;
@@ -112,9 +130,9 @@ function setTitle(t) { el('view-title').textContent = t; }
 
 async function render() {
   document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
-  const v = el('view');
   el('add-btn').style.display = (state.view === 'sessions' || state.view === 'dashboard') ? '' : 'none';
   window.scrollTo({ top: 0 });
+  const v = el('view');
   switch (state.view) {
     case 'dashboard': setTitle('Today'); return renderDashboard(v);
     case 'sessions':  setTitle('Therapy Plans'); return renderPlans(v);
@@ -130,7 +148,22 @@ function greetingText() {
   return `${word} · ${new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}`;
 }
 
-/* ---------------- Dashboard ---------------- */
+function planCardHtml(p, st) {
+  const pct = st.total ? Math.round((st.attended / st.total) * 100) : 0;
+  const end = cycleEnd(p);
+  return `
+    <div class="card plan-card tint-${p.type}" data-act="open" data-id="${p.id}">
+      <div class="ring-wrap">${ring(pct, COLORVAR[p.type], { size: 56, stroke: 8, center: `<div class="big" style="font-size:14px">${pct}%</div>` })}</div>
+      <div class="info">
+        <span class="tag">${p.type}</span>
+        <h2>${esc(p.name)}</h2>
+        <div class="meta">${st.total ? `${st.attended}/${st.total} attended` : `${st.attended} attended`}${end ? ` · ends ${fmtDate(end)}` : ''}</div>
+      </div>
+      <div class="chev">›</div>
+    </div>`;
+}
+
+/* ---------------- Dashboard (two tracks) ---------------- */
 async function renderDashboard(v) {
   await loadPrograms();
   const ctas = await getCTAs();
@@ -139,16 +172,16 @@ async function renderDashboard(v) {
   const todayPct = ctas.length ? Math.round((doneToday / ctas.length) * 100) : 0;
   const streak = computeStreak(counts, ctas.length);
 
-  // overall attendance across all plans
-  let A = 0, M = 0, T = 0;
-  const planRows = [];
+  const rows = [];
   for (const p of state.programs) {
-    const sess = await db.byIndex(STORE.sessions, 'programId', p.id);
-    const st = stats(p, sess);
-    A += st.attended; M += st.missed; T += st.total;
-    planRows.push({ p, st });
+    rows.push({ p, st: stats(p, await db.byIndex(STORE.sessions, 'programId', p.id)) });
   }
-  const adherence = (A + M) ? Math.round((A / (A + M)) * 100) : 0;
+  const inst = rows.filter((r) => r.p.track === 'Institute');
+  const home = rows.filter((r) => r.p.track === 'Home');
+
+  const sum = (list) => list.reduce((a, { st }) => ({ A: a.A + st.attended, M: a.M + st.missed, T: a.T + st.total }), { A: 0, M: 0, T: 0 });
+  const iSum = sum(inst);
+  const adherence = (iSum.A + iSum.M) ? Math.round((iSum.A / (iSum.A + iSum.M)) * 100) : 0;
 
   // activity heatmap (last 12 weeks of daily-ritual completion)
   const cells = [];
@@ -158,6 +191,36 @@ async function renderDashboard(v) {
     cells.push({ level: frac <= 0 ? 0 : Math.min(4, Math.ceil(frac * 4)), color: 'var(--green)', title: `${fmtDate(d)} — ${Math.round(frac * 100)}%` });
   }
 
+  // ----- Institute track block -----
+  let instBlock;
+  if (inst.length) {
+    const donutCard = (iSum.A + iSum.M) ? `
+      <div class="card">
+        <div class="stat-flex">
+          ${donut([
+            { value: iSum.A, color: 'var(--green)' },
+            { value: iSum.M, color: 'var(--red)' },
+            { value: Math.max(0, iSum.T - iSum.A - iSum.M), color: 'color-mix(in srgb, var(--muted) 22%, transparent)' },
+          ], { center: `<div class="big">${adherence}%</div><div class="lbl">attended</div>` })}
+          <div style="flex:1">
+            <h2 style="margin-bottom:10px">Attendance</h2>
+            <div class="legend">
+              <span><i style="background:var(--green)"></i>${iSum.A} attended</span>
+              <span><i style="background:var(--red)"></i>${iSum.M} missed</span>
+              <span><i style="background:color-mix(in srgb,var(--muted) 35%,transparent)"></i>${Math.max(0, iSum.T - iSum.A - iSum.M)} upcoming</span>
+            </div>
+          </div>
+        </div>
+      </div>` : '';
+    instBlock = donutCard + inst.map(({ p, st }) => planCardHtml(p, st)).join('');
+  } else {
+    instBlock = `<div class="card center" style="padding:22px">
+      <p class="muted" style="margin:0 0 12px">No institute plans yet.</p>
+      <button class="btn" data-act="new-plan" data-track="Institute" style="max-width:240px;margin:0 auto">Add a therapy plan</button>
+    </div>`;
+  }
+
+  // ----- Home track block -----
   const streakBanner = `
     <div class="streak">
       <div class="flame-ico">${streak > 0 ? '🔥' : '🌱'}</div>
@@ -166,7 +229,6 @@ async function renderDashboard(v) {
         <div class="t">${streak > 0 ? 'Daily at-home ritual streak — keep it going!' : 'Complete today’s activities to start a streak'}</div>
       </div>
     </div>`;
-
   const todayCard = `
     <div class="card stat-flex" data-act="go-cta" style="cursor:pointer">
       <div class="ring-wrap">${ring(todayPct, 'var(--brand)', { size: 84, stroke: 11, center: `<div class="big" style="font-size:18px">${todayPct}%</div>` })}</div>
@@ -176,26 +238,6 @@ async function renderDashboard(v) {
       </div>
       <div class="chev" style="color:var(--muted);font-size:24px">›</div>
     </div>`;
-
-  const adherenceCard = (A + M) ? `
-    <div class="card">
-      <div class="stat-flex">
-        ${donut([
-          { value: A, color: 'var(--green)' },
-          { value: M, color: 'var(--red)' },
-          { value: Math.max(0, T - A - M), color: 'color-mix(in srgb, var(--muted) 22%, transparent)' },
-        ], { center: `<div class="big">${adherence}%</div><div class="lbl">attended</div>` })}
-        <div style="flex:1">
-          <h2 style="margin-bottom:10px">Attendance</h2>
-          <div class="legend">
-            <span><i style="background:var(--green)"></i>${A} attended</span>
-            <span><i style="background:var(--red)"></i>${M} missed</span>
-            <span><i style="background:color-mix(in srgb,var(--muted) 35%,transparent)"></i>${Math.max(0, T - A - M)} upcoming</span>
-          </div>
-        </div>
-      </div>
-    </div>` : '';
-
   const heatCard = `
     <div class="card">
       <h2 style="margin-bottom:12px">Daily activity · last 12 weeks</h2>
@@ -206,40 +248,17 @@ async function renderDashboard(v) {
         <i style="background:var(--green);opacity:.7"></i>
         <i style="background:var(--green)"></i>More</div>
     </div>`;
-
-  let plansHtml = '';
-  if (!state.programs.length) {
-    plansHtml = `<div class="empty"><div class="big">🧩</div>
-      <p>No therapy plans yet.<br>Add OT, Speech, or ABA to begin.</p>
-      <button class="btn" data-act="new-plan" style="max-width:240px;margin:0 auto">Create your first plan</button></div>`;
-  } else {
-    for (const { p, st } of planRows) {
-      const pct = st.total ? Math.round((st.attended / st.total) * 100) : 0;
-      const end = cycleEnd(p);
-      plansHtml += `
-        <div class="card plan-card tint-${p.type}" data-act="open" data-id="${p.id}">
-          <div class="ring-wrap">${ring(pct, COLORVAR[p.type], { size: 56, stroke: 8, center: `<div class="big" style="font-size:14px">${pct}%</div>` })}</div>
-          <div class="info">
-            <span class="tag">${p.type}</span>
-            <h2>${esc(p.name)}</h2>
-            <div class="meta">${st.total ? `${st.attended}/${st.total} attended` : `${st.attended} attended`}${end ? ` · ends ${fmtDate(end)}` : ''}</div>
-          </div>
-          <div class="chev">›</div>
-        </div>`;
-    }
-  }
+  const homeBlock = streakBanner + todayCard + heatCard + home.map(({ p, st }) => planCardHtml(p, st)).join('');
 
   v.innerHTML = `
     <p class="greeting">${greetingText()}</p>
-    ${streakBanner}
-    ${todayCard}
-    ${adherenceCard}
-    ${heatCard}
-    <div class="section-title">Your therapy plans</div>
-    ${plansHtml}`;
+    <div class="track-head">${ic('institute')}<span>${TRACKS.Institute.label}</span></div>
+    ${instBlock}
+    <div class="track-head" style="margin-top:24px">${ic('home')}<span>${TRACKS.Home.label}</span></div>
+    ${homeBlock}`;
 }
 
-/* ---------------- Plans list ---------------- */
+/* ---------------- Plans list (grouped by track) ---------------- */
 async function renderPlans(v) {
   await loadPrograms();
   if (!state.programs.length) {
@@ -248,30 +267,38 @@ async function renderPlans(v) {
       <button class="btn" data-act="new-plan" style="max-width:240px;margin:0 auto">New plan</button></div>`;
     return;
   }
-  let html = '';
+  const rows = [];
   for (const p of state.programs) {
-    const sess = await db.byIndex(STORE.sessions, 'programId', p.id);
-    const st = stats(p, sess);
-    const pct = st.total ? Math.round((st.attended / st.total) * 100) : 0;
-    html += `
-      <div class="card plan-card tint-${p.type}" data-act="open" data-id="${p.id}">
-        <div class="ring-wrap">${ring(pct, COLORVAR[p.type], { size: 58, stroke: 8, center: `<div class="big" style="font-size:14px">${pct}%</div>` })}</div>
-        <div class="info">
-          <span class="tag">${p.type}</span>
-          <h2>${esc(p.name)}</h2>
-          <div class="meta">started ${fmtDate(p.cycleStart)}</div>
-          <div class="counts"><span>✅ ${st.attended}</span><span>❌ ${st.missed}</span><span>⏳ ${st.remaining}</span></div>
-        </div>
-        <div class="chev">›</div>
-      </div>`;
+    const st = stats(p, await db.byIndex(STORE.sessions, 'programId', p.id));
+    rows.push({ p, st });
+  }
+  let html = '';
+  for (const track of ['Institute', 'Home']) {
+    const list = rows.filter((r) => r.p.track === track);
+    if (!list.length) continue;
+    html += `<div class="track-head">${ic(TRACKS[track].icon)}<span>${TRACKS[track].label}</span></div>`;
+    for (const { p, st } of list) {
+      const pct = st.total ? Math.round((st.attended / st.total) * 100) : 0;
+      html += `
+        <div class="card plan-card tint-${p.type}" data-act="open" data-id="${p.id}">
+          <div class="ring-wrap">${ring(pct, COLORVAR[p.type], { size: 58, stroke: 8, center: `<div class="big" style="font-size:14px">${pct}%</div>` })}</div>
+          <div class="info">
+            <span class="tag">${p.type}</span>
+            <h2>${esc(p.name)}</h2>
+            <div class="meta">started ${fmtDate(p.cycleStart)}</div>
+            <div class="counts"><span>✅ ${st.attended}</span><span>❌ ${st.missed}</span><span>⏳ ${st.remaining}</span></div>
+          </div>
+          <div class="chev">›</div>
+        </div>`;
+    }
   }
   v.innerHTML = html;
 }
 
-/* ---------------- Single program (timeline) ---------------- */
+/* ---------------- Single program (timeline + per-plan chart) ---------------- */
 async function renderProgram(v) {
-  const p = await db.get(STORE.programs, state.programId);
-  if (!p) { state.view = 'sessions'; return render(); }
+  const p = { track: 'Institute', ...(await db.get(STORE.programs, state.programId)) };
+  if (!p.id) { state.view = 'sessions'; return render(); }
   await loadSessions(p.id);
   setTitle(p.name);
   const st = stats(p, state.sessions);
@@ -295,6 +322,20 @@ async function renderProgram(v) {
       </div>`;
   }).join('');
 
+  // per-plan breakdown bar
+  const total = st.total || 1;
+  const bar = `
+    <div class="statbar">
+      ${st.attended ? `<span style="flex:${st.attended};background:var(--green)"></span>` : ''}
+      ${st.missed ? `<span style="flex:${st.missed};background:var(--red)"></span>` : ''}
+      ${st.remaining ? `<span style="flex:${st.remaining};background:color-mix(in srgb,var(--muted) 22%,transparent)"></span>` : ''}
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--green)"></i>${st.attended} attended (${Math.round(st.attended / total * 100)}%)</span>
+      <span><i style="background:var(--red)"></i>${st.missed} missed</span>
+      <span><i style="background:color-mix(in srgb,var(--muted) 35%,transparent)"></i>${st.remaining} upcoming</span>
+    </div>`;
+
   v.innerHTML = `
     <button class="btn secondary small" data-act="back" style="margin:4px 0 14px">‹ All plans</button>
     <div class="card stat-flex tint-${p.type}">
@@ -302,13 +343,14 @@ async function renderProgram(v) {
       <div style="flex:1">
         <span class="tag">${p.type}</span>
         <h2 style="margin-top:6px">${esc(p.name)}</h2>
-        <div class="meta" style="color:var(--muted);font-size:12.5px;margin-top:4px">Started ${fmtDate(p.cycleStart)}${end ? `<br>Cycle ends ${fmtDate(end)}` : ''}</div>
-        <div class="counts" style="display:flex;gap:12px;font-size:13px;color:var(--ink-soft);margin-top:8px">
-          <span>✅ ${st.attended}</span><span>❌ ${st.missed}</span><span>⏳ ${st.remaining}</span>
-        </div>
+        <div class="meta" style="color:var(--muted);font-size:12.5px;margin-top:4px">${ic(TRACKS[p.track].icon)}${TRACKS[p.track].label} · started ${fmtDate(p.cycleStart)}${end ? `<br>Cycle ends ${fmtDate(end)}` : ''}</div>
       </div>
     </div>
-    <div class="section-title">Session timeline</div>
+    <div class="card">
+      <h2>${ic('chart')}Attendance breakdown</h2>
+      ${bar}
+    </div>
+    <div class="section-title">${ic('activity')}Session timeline</div>
     <div class="timeline">${items}</div>
     ${monthly ? `<div class="btn-row" style="margin-top:8px">
         <button class="btn secondary" data-act="add-session">+ Add session</button>
@@ -354,7 +396,7 @@ async function renderResources(v) {
   for (const cat of ['OT', 'Speech', 'ABA', 'General']) {
     const items = res.filter((r) => r.cat === cat);
     if (!items.length) continue;
-    html += `<div class="section-title">${cat}</div>`;
+    html += `<div class="section-title">${ic('book')}${cat}</div>`;
     for (const r of items) {
       let host = '';
       try { host = new URL(r.url).hostname.replace('www.', ''); } catch {}
@@ -382,10 +424,16 @@ function openModal(innerHTML) {
 function closeModal() { el('modal-root').innerHTML = ''; }
 
 /* ---------------- New plan modal ---------------- */
-function newPlanModal() {
+function newPlanModal(defaultTrack = 'Institute') {
   openModal(`
     <h2>New therapy plan</h2>
     <p class="modal-sub">OT & Speech run 24 sessions. ABA runs a monthly cycle.</p>
+    <label class="field"><span>Track</span>
+      <div class="seg" id="track-seg">
+        <button data-track="Institute" class="on-brand">🏛️ Institute</button>
+        <button data-track="Home">🏠 Home</button>
+      </div>
+    </label>
     <label class="field"><span>Type</span>
       <div class="seg" id="type-seg">
         <button data-type="OT" class="on-OT">OT</button>
@@ -401,16 +449,23 @@ function newPlanModal() {
       <button class="btn secondary" data-act="cancel">Cancel</button>
       <button class="btn" id="save-plan">Create plan</button>
     </div>`);
-  let selected = 'OT';
+  let track = defaultTrack, type = 'OT';
+  const seg = (id, attr, val, cls) => {
+    el(id).querySelectorAll('button').forEach((x) => x.className = '');
+    el(id).querySelector(`button[data-${attr}="${val}"]`).className = cls;
+  };
+  seg('track-seg', 'track', track, 'on-brand');
+  el('track-seg').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-track]'); if (!b) return;
+    track = b.dataset.track; seg('track-seg', 'track', track, 'on-brand');
+  });
   el('type-seg').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-type]'); if (!b) return;
-    selected = b.dataset.type;
-    el('type-seg').querySelectorAll('button').forEach((x) => x.className = '');
-    b.className = `on-${selected}`;
+    type = b.dataset.type; seg('type-seg', 'type', type, `on-${type}`);
   });
   el('save-plan').addEventListener('click', async () => {
     const cycleStart = el('plan-date').value || todayISO();
-    const p = await createProgram({ type: selected, name: el('plan-name').value.trim(), cycleStart });
+    const p = await createProgram({ type, track, name: el('plan-name').value.trim(), cycleStart });
     closeModal(); state.view = 'program'; state.programId = p.id; render();
   });
 }
@@ -511,20 +566,141 @@ function addResModal() {
 }
 
 /* ============================================================
+   Settings: backup / restore + reminders
+   ============================================================ */
+const getSettings = async () => (await db.get(STORE.kv, 'settings'))?.value || {};
+const saveSettings = (s) => db.put(STORE.kv, { key: 'settings', value: s });
+
+function blobToDataUrl(blob) {
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
+}
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function exportData() {
+  const programs = await db.getAll(STORE.programs);
+  const sessions = await db.getAll(STORE.sessions);
+  const checks = await db.getAll(STORE.checks);
+  const kv = await db.getAll(STORE.kv);
+  for (const s of sessions) {
+    if (s.documents) for (const d of s.documents) {
+      if (d.blob) { d.dataUrl = await blobToDataUrl(d.blob); delete d.blob; }
+    }
+  }
+  const data = { app: 'session-tracker', version: 1, exportedAt: new Date().toISOString(), programs, sessions, checks, kv };
+  downloadBlob(new Blob([JSON.stringify(data)], { type: 'application/json' }), `session-tracker-backup-${todayISO()}.json`);
+}
+async function importData(file) {
+  const data = JSON.parse(await file.text());
+  if (data.app !== 'session-tracker') { alert('That file is not a Session Tracker backup.'); return; }
+  if (!confirm('Restore this backup? It will REPLACE all current data on this device.')) return;
+  for (const store of [STORE.programs, STORE.sessions, STORE.checks, STORE.kv]) await db.clear(store);
+  for (const p of data.programs || []) await db.put(STORE.programs, p);
+  for (const s of data.sessions || []) {
+    if (s.documents) for (const d of s.documents) {
+      if (d.dataUrl) { d.blob = await (await fetch(d.dataUrl)).blob(); delete d.dataUrl; }
+    }
+    await db.put(STORE.sessions, s);
+  }
+  for (const c of data.checks || []) await db.put(STORE.checks, c);
+  for (const k of data.kv || []) await db.put(STORE.kv, k);
+  closeModal(); alert('Backup restored.'); state.view = 'dashboard'; render();
+}
+
+async function settingsModal() {
+  const s = await getSettings();
+  openModal(`
+    <h2>Settings</h2>
+    <p class="modal-sub">Your data is stored privately on this device.</p>
+
+    <div class="section-title" style="margin-left:0">${ic('flame')}Daily reminder</div>
+    <div class="settings-row">
+      <div><div style="font-weight:600">Remind me</div><div class="muted" style="font-size:12.5px">Nudge to do today's at-home activities</div></div>
+      <input type="checkbox" class="switch" id="rem-enable" ${s.reminderEnabled ? 'checked' : ''}>
+    </div>
+    <div class="settings-row">
+      <div style="font-weight:600">Reminder time</div>
+      <input type="time" id="rem-time" value="${s.reminderTime || '18:00'}" style="width:130px">
+    </div>
+    <button class="btn secondary small" id="rem-test" style="margin-top:6px">Send a test reminder</button>
+    <p class="muted" style="font-size:12px;margin-top:8px">On iPhone, reminders work only after you add this app to your Home Screen, and may appear when you next open it.</p>
+
+    <div class="section-title" style="margin-left:0;margin-top:22px">${ic('chart')}Backup & restore</div>
+    <p class="muted" style="font-size:12.5px;margin:0 0 12px">Save everything (plans, sessions, notes & documents) to a file you can keep or move to another phone.</p>
+    <div class="btn-row">
+      <button class="btn" id="do-export">⬇︎ Export backup</button>
+      <label class="btn secondary" style="cursor:pointer">⬆︎ Import backup
+        <input type="file" id="import-file" accept="application/json,.json" hidden></label>
+    </div>
+
+    <button class="btn secondary" data-act="cancel" style="margin-top:18px">Close</button>`);
+
+  el('rem-enable').addEventListener('change', async (e) => {
+    const next = await getSettings();
+    next.reminderEnabled = e.target.checked;
+    if (e.target.checked && 'Notification' in window && Notification.permission === 'default') {
+      await Notification.requestPermission();
+    }
+    await saveSettings(next);
+  });
+  el('rem-time').addEventListener('change', async (e) => {
+    const next = await getSettings(); next.reminderTime = e.target.value; await saveSettings(next);
+  });
+  el('rem-test').addEventListener('click', async () => {
+    if (!('Notification' in window)) { alert('Notifications are not supported in this browser.'); return; }
+    let perm = Notification.permission;
+    if (perm === 'default') perm = await Notification.requestPermission();
+    if (perm !== 'granted') { alert('Notifications are blocked. Enable them in your browser/site settings.'); return; }
+    showReminder('This is a test reminder 🌱');
+  });
+  el('do-export').addEventListener('click', exportData);
+  el('import-file').addEventListener('change', (e) => { if (e.target.files[0]) importData(e.target.files[0]); });
+}
+
+async function showReminder(body) {
+  const opts = { body, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: 'daily-reminder' };
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    if (reg) return reg.showNotification('Session Tracker', opts);
+  } catch {}
+  new Notification('Session Tracker', opts);
+}
+
+async function maybeRemind() {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const s = await getSettings();
+  if (!s.reminderEnabled) return;
+  const today = todayISO();
+  if (s.lastNotified === today) return;
+  const [hh, mm] = (s.reminderTime || '18:00').split(':').map(Number);
+  const now = new Date();
+  if (now.getHours() < hh || (now.getHours() === hh && now.getMinutes() < mm)) return;
+  const ctas = await getCTAs();
+  const counts = await checkCountsByDate();
+  if ((counts[today] || 0) >= ctas.length) return; // already done today
+  await showReminder('Time for today’s at-home activities 🌱');
+  s.lastNotified = today; await saveSettings(s);
+}
+
+/* ============================================================
    Event wiring
    ============================================================ */
 document.querySelector('.tabbar').addEventListener('click', (e) => {
   const b = e.target.closest('.tab'); if (!b) return;
   state.view = b.dataset.view; state.programId = null; render();
 });
-el('add-btn').addEventListener('click', newPlanModal);
+el('add-btn').addEventListener('click', () => newPlanModal());
+el('settings-btn').addEventListener('click', settingsModal);
 
 document.addEventListener('click', async (e) => {
   const t = e.target.closest('[data-act]'); if (!t) return;
   const act = t.dataset.act;
   switch (act) {
     case 'cancel': return closeModal();
-    case 'new-plan': return newPlanModal();
+    case 'new-plan': return newPlanModal(t.dataset.track || 'Institute');
     case 'go-cta': state.view = 'cta'; return render();
     case 'open': state.view = 'program'; state.programId = t.dataset.id; return render();
     case 'back': state.view = 'sessions'; state.programId = null; return render();
@@ -544,7 +720,7 @@ document.addEventListener('click', async (e) => {
     }
     case 'next-cycle': {
       const p = await db.get(STORE.programs, state.programId);
-      const next = await createProgram({ type: p.type, name: p.name, cycleStart: cycleEnd(p) });
+      const next = await createProgram({ type: p.type, track: p.track, name: p.name, cycleStart: cycleEnd(p) });
       state.programId = next.id; return render();
     }
     case 'del-plan': {
@@ -560,5 +736,10 @@ document.addEventListener('click', async (e) => {
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 }
+
+/* reminders: check at boot, when returning to the app, and periodically while open */
+maybeRemind();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) maybeRemind(); });
+setInterval(maybeRemind, 5 * 60 * 1000);
 
 render();

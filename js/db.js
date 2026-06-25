@@ -61,6 +61,9 @@ export const db = {
   async delete(store, key) {
     return reqToPromise((await tx(store, 'readwrite')).delete(key));
   },
+  async clear(store) {
+    return reqToPromise((await tx(store, 'readwrite')).clear());
+  },
   async byIndex(store, indexName, value) {
     const os = await tx(store);
     return reqToPromise(os.index(indexName).getAll(value));
