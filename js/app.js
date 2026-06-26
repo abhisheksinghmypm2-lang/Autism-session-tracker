@@ -585,6 +585,34 @@ function barChart(data, { w = 320, h = 130 } = {}) {
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="xMidYMid meet">${bars}</svg>`;
 }
 
+// Mood trend: data = [{ label, value(0-4)|null }]. Smooth line over weeks that
+// have at least one logged mood; gaps in logging simply break the line.
+function moodLineChart(data, { w = 320, h = 150 } = {}) {
+  const padL = 30, padR = 12, padT = 14, padB = 20;
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+  const n = data.length;
+  const x = (i) => padL + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+  const y = (val) => padT + plotH - (val / 4) * plotH; // 0..4 -> bottom..top
+  // gridlines at each mood level with emoji on the axis
+  const grid = CHILD_MOOD.map((e, lvl) => {
+    const gy = y(lvl);
+    return `<line x1="${padL}" y1="${gy}" x2="${w - padR}" y2="${gy}" stroke="var(--line,#e2e8f0)" stroke-width="1"/>
+      <text x="${padL - 6}" y="${gy + 4}" font-size="11" text-anchor="end">${e}</text>`;
+  }).join('');
+  // build polyline segments, breaking on null
+  const pts = data.map((d, i) => (d.value == null ? null : { x: x(i), y: y(d.value), v: d.value }));
+  let path = '', segStart = true;
+  for (const p of pts) {
+    if (!p) { segStart = true; continue; }
+    path += `${segStart ? 'M' : 'L'}${p.x.toFixed(1)} ${p.y.toFixed(1)} `;
+    segStart = false;
+  }
+  const line = path ? `<path d="${path}" fill="none" stroke="var(--brand)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>` : '';
+  const dots = pts.filter(Boolean).map((p) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3.5" fill="var(--brand)"/>`).join('');
+  const xlabels = data.map((d, i) => `<text x="${x(i).toFixed(1)}" y="${h - 5}" font-size="8.5" text-anchor="middle" fill="var(--muted)">${esc(d.label)}</text>`).join('');
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="xMidYMid meet">${grid}${line}${dots}${xlabels}</svg>`;
+}
+
 function rangeStart(range) {
   if (range === 'all') return '1970-01-01';
   return addDays(todayISO(), range === '3months' ? -90 : -30);
@@ -610,6 +638,26 @@ async function renderProgress(v, seg) {
   }
   const sessionsInRange = attended.filter((d) => d >= start).length;
 
+  // mood trend — average logged child mood per week bucket (null when none)
+  const dailyLogs = await getDailyLogs();
+  const moodBuckets = [];
+  let moodDays = 0;
+  for (let i = weeks - 1; i >= 0; i--) {
+    const wStart = addDays(todayISO(), -(i + 1) * 7 + 1), wEnd = addDays(todayISO(), -i * 7);
+    const vals = [];
+    for (const [d, log] of Object.entries(dailyLogs)) {
+      if (d >= wStart && d <= wEnd && typeof log.childMood === 'number') { vals.push(log.childMood); moodDays++; }
+    }
+    const value = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    const label = new Date(wEnd + 'T00:00:00').toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
+    moodBuckets.push({ label, value });
+  }
+  const moodCard = moodDays
+    ? `<div class="card"><h2 style="margin-bottom:8px">💛 How ${esc(name)} has been feeling</h2>
+        ${moodLineChart(moodBuckets)}
+        <p class="sub" style="margin:8px 0 0">${moodDays} ${moodDays === 1 ? 'day' : 'days'} logged in this period</p></div>`
+    : '';
+
   // wins (milestones) in range + delta vs previous equal period
   const milestones = await getMilestones();
   const inRange = milestones.filter((m) => m.date >= start);
@@ -634,6 +682,7 @@ async function renderProgress(v, seg) {
     <div class="card"><h2 style="margin-bottom:8px">${ic('chart')}Sessions delivered</h2>
       ${barChart(buckets)}
       <p class="sub" style="margin:8px 0 0">${sessionsInRange} attended in this period</p></div>
+    ${moodCard}
     <div class="card"><div class="prog-bignum">${inRange.length}</div>
       <div style="font-weight:700">wins logged${deltaTxt}</div></div>
     <div class="card"><h2 style="margin-bottom:10px">🌟 Milestone timeline</h2>${timeline}</div>
@@ -653,6 +702,13 @@ async function exportReport() {
   rows.sort((a, b) => (a.date < b.date ? 1 : -1));
   const milestones = (await getMilestones()).filter((m) => m.date >= start).sort((a, b) => (a.date < b.date ? 1 : -1));
   const tnotes = await getTNotes();
+  // mood summary over the range
+  const dailyLogs = await getDailyLogs();
+  const moodVals = Object.entries(dailyLogs).filter(([d, l]) => d >= start && typeof l.childMood === 'number').map(([, l]) => l.childMood);
+  const moodAvg = moodVals.length ? moodVals.reduce((a, b) => a + b, 0) / moodVals.length : null;
+  const moodSummary = moodAvg == null ? '' :
+    `<h2>How ${esc(name)} has been feeling (${moodVals.length} ${moodVals.length === 1 ? 'day' : 'days'})</h2>
+     <p>Average mood: <strong>${CHILD_MOOD[Math.round(moodAvg)]} ${moodAvg.toFixed(1)} / 4</strong></p>`;
   const li = (s) => `<li>${s}</li>`;
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(name)} — Report</title>
     <style>body{font-family:-apple-system,Arial,sans-serif;color:#1e293b;padding:28px;max-width:720px;margin:auto;line-height:1.5}
@@ -667,6 +723,7 @@ async function exportReport() {
     <ul>${rows.map((r) => li(`${fmtDate(r.date)} — ${esc(r.name)} <span class="cat">${esc(r.type)}</span>`)).join('') || li('None in this period')}</ul>
     <h2>Milestones (${milestones.length})</h2>
     <ul>${milestones.map((m) => li(`<strong>${esc(m.text)}</strong> — ${fmtDate(m.date)} <span class="cat">${esc(m.category || 'Other')}</span>`)).join('') || li('None in this period')}</ul>
+    ${moodSummary}
     <h2>Notes for the therapist (${tnotes.length})</h2>
     <ul>${tnotes.map((n) => li(`${esc(n.text)} <span class="meta">(${fmtDate(n.dateAdded)})</span>`)).join('') || li('None')}</ul>
     <button onclick="window.print()">Save as PDF / Print</button>
