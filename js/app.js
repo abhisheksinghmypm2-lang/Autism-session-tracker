@@ -305,6 +305,23 @@ function showSnackbar(msg, actionLabel, onAction, ms = 4500) {
   clearTimeout(_snackTimer); _snackTimer = setTimeout(close, ms);
 }
 
+/* ---------------- parent wellbeing (kv map of dateISO -> 1..5; last 30 days) ---------------- */
+const WB_EMOJI = ['😔', '😕', '😐', '🙂', '😊']; // index + 1 = score
+const getWellbeing = async () => (await DB.get(STORE.kv, 'parentWellbeing'))?.value || {};
+async function setWellbeing(score) {
+  const wb = await getWellbeing();
+  wb[todayISO()] = score;
+  const keys = Object.keys(wb).sort();
+  while (keys.length > 30) delete wb[keys.shift()];
+  await DB.put(STORE.kv, { key: 'parentWellbeing', value: wb });
+}
+// True if two consecutive recent days are low (≤2) — drives the supportive card / resource pin.
+function recentLowMood(wb) {
+  const low = (d) => wb[d] != null && wb[d] <= 2;
+  const d0 = todayISO(), d1 = addDays(d0, -1), d2 = addDays(d0, -2);
+  return (low(d1) && low(d2)) || (low(d0) && low(d1));
+}
+
 // Lightweight confetti burst (no library): a transient canvas of falling pieces.
 function confettiBurst() {
   const c = document.createElement('canvas');
@@ -355,6 +372,7 @@ async function renderDashboard(v) {
   await loadPrograms();
   const child = await getChild();
   const milestones = await getMilestones();
+  const wb = await getWellbeing();
   const ctas = await getCTAs();
   const counts = await checkCountsByDate();
   const doneToday = counts[todayISO()] || 0;
@@ -464,14 +482,27 @@ async function renderDashboard(v) {
         <div class="chev">›</div>
       </div>` : '');
 
+  const todayScore = wb[todayISO()];
+  const wbCard = `<div class="card wb-card">
+      <h2>How are <em>you</em> doing today?</h2>
+      <div class="wb-row">${WB_EMOJI.map((e, i) =>
+        `<button class="wb-emoji ${todayScore === i + 1 ? 'on' : ''}" data-act="wb-set" data-score="${i + 1}" aria-label="mood ${i + 1}">${e}</button>`).join('')}</div>
+    </div>`;
+  const supportCard = recentLowMood(wb) ? `<div class="card wb-support" data-act="go-resources" role="button">
+      <div style="font-weight:800">Tough week. You're doing an incredible job. 💙</div>
+      <p class="sub" style="margin:6px 0 0">Here are some resources just for you →</p>
+    </div>` : '';
+
   v.innerHTML = `
     ${dashHeaderHtml(child)}
     ${welcome}
+    ${supportCard}
     ${msCard}
     <div class="track-head">${ic('institute')}<span>${TRACKS.Institute.label}</span></div>
     ${instBlock}
     <div class="track-head" style="margin-top:24px">${ic('home')}<span>${TRACKS.Home.label}</span></div>
-    ${homeBlock}`;
+    ${homeBlock}
+    ${wbCard}`;
 }
 
 /* ---------------- Plans list (grouped by track) ---------------- */
@@ -669,6 +700,14 @@ async function getResources() {
 }
 async function renderResources(v) {
   const res = await getResources();
+  const wb = await getWellbeing();
+  // Contextual pin: if the parent's mood has been low two days running, surface support for them.
+  const pin = recentLowMood(wb) ? `
+    <a class="card res-item wb-pin" href="https://www.autismspeaks.org/tool-kit/family-support-tool-kit" target="_blank" rel="noopener">
+      <h3>Support for you — you matter too 💙</h3>
+      <p>Caregiving is hard. A few gentle resources for parents and caregivers.</p>
+      <span class="host">autismspeaks.org ↗</span>
+    </a>` : '';
   let html = '';
   for (const cat of ['OT', 'Speech', 'ABA', 'General']) {
     const items = res.filter((r) => r.cat === cat);
@@ -685,7 +724,7 @@ async function renderResources(v) {
         </a>`;
     }
   }
-  v.innerHTML = html + `<button class="btn secondary" data-act="add-res" style="margin-top:8px">+ Add a resource link</button>`;
+  v.innerHTML = pin + html + `<button class="btn secondary" data-act="add-res" style="margin-top:8px">+ Add a resource link</button>`;
 }
 
 /* ============================================================
@@ -1391,6 +1430,8 @@ document.addEventListener('click', async (e) => {
     case 'cancel': return closeModal();
     case 'new-plan': return newPlanModal(t.dataset.track || 'Institute');
     case 'go-cta': state.view = 'cta'; return render();
+    case 'go-resources': state.view = 'resources'; return render();
+    case 'wb-set': await setWellbeing(+t.dataset.score); return render();
     case 'open': state.view = 'program'; state.programId = t.dataset.id; return render();
     case 'back': state.view = 'sessions'; state.programId = null; return render();
     case 'session': return sessionModal(t.dataset.id);

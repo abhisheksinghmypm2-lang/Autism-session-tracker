@@ -165,6 +165,23 @@ button { font-family: inherit; }
 }
 .chip-select.on { background: var(--brand); color: #fff; border-color: var(--brand); }
 
+/* ---------- parent wellbeing ---------- */
+.wb-card h2 em { font-style: normal; color: var(--brand); }
+.wb-row { display: flex; justify-content: space-between; gap: 6px; margin-top: 12px; }
+.wb-emoji {
+  flex: 1; min-width: 52px; height: 56px; font-size: 28px; line-height: 1;
+  border: none; background: var(--bg-2); border-radius: 14px; cursor: pointer;
+  transition: transform 0.15s cubic-bezier(.2,.8,.2,1), box-shadow 0.15s, background 0.15s;
+}
+.wb-emoji:active { transform: scale(0.88); }
+.wb-emoji.on {
+  background: color-mix(in srgb, var(--brand) 14%, transparent);
+  box-shadow: inset 0 0 0 2.5px var(--brand);
+  transform: scale(1.08);
+}
+.wb-support { background: color-mix(in srgb, var(--ot) 12%, var(--card)); border: 1px solid color-mix(in srgb, var(--ot) 30%, transparent); cursor: pointer; }
+.wb-pin { background: color-mix(in srgb, var(--ot) 10%, var(--card)); border: 1px solid color-mix(in srgb, var(--ot) 30%, transparent); }
+
 /* ---------- things to tell the therapist ---------- */
 .tn-banner {
   display: flex; align-items: center; gap: 8px; cursor: pointer;
