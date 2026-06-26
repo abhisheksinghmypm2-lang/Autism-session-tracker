@@ -1151,7 +1151,11 @@ async function sessionModal(id) {
     const view = e.target.closest('[data-act="view-doc"]');
     const del = e.target.closest('[data-act="del-doc"]');
     if (view) openDoc(s.documents[+view.dataset.i]);
-    if (del) { await removeDoc(s.documents[+del.dataset.i]); s.documents.splice(+del.dataset.i, 1); await DB.put(STORE.sessions, s); sessionModal(id); }
+    if (del) {
+      const doc = s.documents[+del.dataset.i];
+      if (!confirm(`Remove "${doc?.name || 'this document'}"? This permanently deletes the file and can't be undone.`)) return;
+      await removeDoc(doc); s.documents.splice(+del.dataset.i, 1); await DB.put(STORE.sessions, s); sessionModal(id);
+    }
   });
   el('save-session').addEventListener('click', async () => {
     s.status = status; s.date = el('s-date').value; s.notes = el('s-notes').value;
@@ -1392,6 +1396,7 @@ function milestoneCardHtml(m) {
   const color = MILESTONE_CATS[m.category] || MILESTONE_CATS.Other;
   return `<div class="ms-card">
     ${m.photo ? `<img class="ms-photo" src="${m.photo}" alt="">` : ''}
+    <button class="ms-del" data-act="ms-del" data-id="${m.id}" aria-label="Remove milestone">✕</button>
     <div class="ms-star">★</div>
     <div class="ms-text">${esc(m.text)}</div>
     <div class="ms-meta"><span class="ms-cat" style="background:${color}">${esc(m.category || 'Other')}</span><span class="ms-date">${fmtDate(m.date)}</span></div>
@@ -1773,6 +1778,18 @@ document.addEventListener('click', async (e) => {
       await saveTNotes(arr); therapistNotesModal();
       showSnackbar('Removed', 'Undo', async () => {
         const a2 = await getTNotes(); a2.splice(idx, 0, removed); await saveTNotes(a2); therapistNotesModal();
+      });
+      return;
+    }
+    case 'ms-del': {
+      const id = t.dataset.id;
+      const arr = await getMilestones();
+      const idx = arr.findIndex((m) => m.id === id);
+      if (idx < 0) return;
+      const [removed] = arr.splice(idx, 1);
+      await saveMilestones(arr); milestonesModal();
+      showSnackbar('Milestone removed', 'Undo', async () => {
+        const a2 = await getMilestones(); a2.splice(idx, 0, removed); await saveMilestones(a2); milestonesModal();
       });
       return;
     }
