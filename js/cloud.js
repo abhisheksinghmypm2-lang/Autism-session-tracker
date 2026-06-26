@@ -18,8 +18,10 @@ export async function createCloud(config, databaseId) {
   const auth = await import(CDN('auth'));
   const fs = await import(CDN('firestore'));
   const st = await import(CDN('storage'));
+  const fns = await import(CDN('functions'));
 
   const app = initializeApp(config);
+  const functions = fns.getFunctions(app, 'us-central1');
 
   // Firestore with on-device cache => offline support + fast reads.
   // databaseId targets a named database (this project uses "autism").
@@ -90,6 +92,13 @@ export async function createCloud(config, databaseId) {
       return cred.user;
     },
     signOutUser() { return auth.signOut(authI); },
+
+    // ---- callable Cloud Functions ----
+    async callFunction(name, data) {
+      const callable = fns.httpsCallable(functions, name, { timeout: 540000 });
+      const res = await callable(data);
+      return res.data;
+    },
 
     // ---- document (file) storage ----
     async uploadDocument(file, name) {

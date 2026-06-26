@@ -159,8 +159,28 @@ async function getCTAs() {
 async function checkCountsByDate() {
   const all = await DB.getAll(STORE.checks);
   const map = {};
-  for (const c of all) { const d = c.key.split('|')[0]; map[d] = (map[d] || 0) + 1; }
+  for (const c of all) {
+    if ((c.key.split('|')[1] || '').startsWith('ai:')) continue; // AI-plan steps don't count toward the daily-ritual streak
+    const d = c.key.split('|')[0];
+    map[d] = (map[d] || 0) + 1;
+  }
   return map;
+}
+
+/* ---------------- AI home plan (generated from the therapist's plan) ---------------- */
+const getAiPlan = async () => (await DB.get(STORE.kv, 'aiPlan'))?.value || null;
+const saveAiPlan = (plan) => DB.put(STORE.kv, { key: 'aiPlan', value: plan });
+const clearAiPlan = () => DB.delete(STORE.kv, 'aiPlan');
+// AI step completion is stored in the checks store under an `ai:` itemId so it
+// stays separate from the daily-ritual streak. dateForDay = weekStart + dayIdx.
+const aiCheckKey = (dateISO, dayIdx, stepIdx) => `${dateISO}|ai:${dayIdx}:${stepIdx}`;
+function fileToBase64(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(',')[1]); // strip data: prefix
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
 }
 function computeStreak(countsByDate, ctaCount) {
   if (!ctaCount) return 0;
@@ -451,8 +471,47 @@ async function renderCTA(v) {
       <div style="flex:1"><h2>${doneToday === ctas.length && ctas.length ? 'All done today 🎉' : "Today's activities"}</h2>
         <p class="sub" style="margin:2px 0 0">${doneToday}/${ctas.length} complete · resets each day</p></div>
     </div>
+    ${await aiTodayCardHtml()}
     <div class="card">${rows}</div>
     <button class="btn secondary" data-act="add-cta">+ Add my own activity</button>`;
+}
+
+/* Today's slice of the AI-generated weekly plan, shown on the Daily tab. */
+async function aiTodayCardHtml() {
+  const plan = await getAiPlan();
+  if (!plan || !Array.isArray(plan.days)) {
+    return `<div class="card ai-cta" data-act="ai-generate" style="cursor:pointer">
+      <h2>${ic('chart')}Therapist-based home plan</h2>
+      <p class="sub" style="margin:2px 0 10px">Upload your therapist's weekly plan and let AI turn it into a daily 15-minute routine.</p>
+      <button class="btn" data-act="ai-generate">✨ Generate this week's plan</button>
+    </div>`;
+  }
+  const idx = Math.floor((new Date(todayISO()) - new Date(plan.weekStartDate)) / 86400000);
+  const day = plan.days[idx];
+  const header = `<div class="row-between"><h2 style="margin:0">${ic('chart')}Therapist-based plan</h2>
+      <button class="btn secondary small" data-act="ai-view">Full week</button></div>`;
+  if (idx < 0 || idx >= plan.days.length || !day) {
+    return `<div class="card">${header}<p class="sub" style="margin:8px 0 0">This week's plan is set. Open “Full week” to view it, or regenerate for the current week.</p></div>`;
+  }
+  let steps = '';
+  for (let j = 0; j < (day.steps || []).length; j++) {
+    const s = day.steps[j];
+    const done = !!(await DB.get(STORE.checks, aiCheckKey(todayISO(), idx, j)));
+    steps += `
+      <div class="check-item ${done ? 'done' : ''}" data-act="toggle-ai" data-d="${idx}" data-s="${j}">
+        <div class="check-box">${done ? '✓' : ''}</div>
+        <div class="check-text">${esc(s.text)}${s.minutes ? ` <span class="muted">· ${s.minutes} min</span>` : ''}</div>
+      </div>`;
+  }
+  const video = day.video
+    ? `<a class="btn secondary small" href="${esc(day.video.url)}" target="_blank" rel="noopener" style="margin-top:8px">▶ ${esc(day.video.title.slice(0, 40))}…</a>`
+    : '';
+  return `<div class="card">
+    ${header}
+    <div class="meta" style="color:var(--muted);font-size:12.5px;margin:6px 0 4px">${esc(day.label || 'Today')}${day.area ? ` · ${day.area}` : ''}</div>
+    ${steps}
+    ${video}
+  </div>`;
 }
 
 /* ---------------- Resources ---------------- */
@@ -651,6 +710,123 @@ function addResModal() {
     const cur = (await DB.get(STORE.kv, 'customResources'))?.value || [];
     cur.push({ id: 'res-' + uid(), cat: el('r-cat').value, title, url, desc: el('r-desc').value.trim() });
     await DB.put(STORE.kv, { key: 'customResources', value: cur }); closeModal(); render();
+  });
+}
+
+/* ---------------- AI home-plan generation (calls the Cloud Function) ---------------- */
+async function toggleAi(dateISO, dayIdx, stepIdx) {
+  const key = aiCheckKey(dateISO, dayIdx, stepIdx);
+  const cur = await DB.get(STORE.checks, key);
+  if (cur) await DB.delete(STORE.checks, key); else await DB.put(STORE.checks, { key, done: true });
+}
+
+function aiGenerateModal() {
+  if (!CLOUD_ENABLED || !cloud) {
+    openModal(`<h2>Cloud sync needed</h2><p class="modal-sub">AI generation runs securely in the cloud. It isn't configured on this build.</p><button class="btn secondary" data-act="cancel">Close</button>`);
+    return;
+  }
+  if (!currentUser || !cloudHealthy) {
+    openModal(`<h2>Sign in first</h2><p class="modal-sub">AI generation needs your account. Open ⚙️ Settings → Account & sync, sign in, then try again.</p><button class="btn secondary" data-act="cancel">Close</button>`);
+    return;
+  }
+  openModal(`
+    <h2>Generate home plan</h2>
+    <p class="modal-sub">Add your therapist's weekly plan — a photo or pasted text — and AI builds a 7-day, ~15-min daily routine with videos.</p>
+    <label class="btn secondary" style="cursor:pointer;margin-bottom:8px">📷 Upload plan photo
+      <input id="ai-image" type="file" accept="image/*" hidden></label>
+    <div id="ai-image-name" class="muted" style="font-size:12px;margin-bottom:12px"></div>
+    <label class="field"><span>…or paste the plan text</span>
+      <textarea id="ai-text" placeholder="e.g. OT: pencil grip & scissor skills. Speech: target /s/ words. ABA: requesting with PECS."></textarea></label>
+    <label class="field"><span>About your child (optional)</span>
+      <input id="ai-context" placeholder="e.g. 5 yrs, minimally verbal, loves music"></label>
+    <label class="field"><span>Week starts</span><input id="ai-week" type="date" value="${todayISO()}"></label>
+    <div id="ai-status" class="muted" style="font-size:13px;margin:8px 0"></div>
+    <div class="btn-row">
+      <button class="btn secondary" data-act="cancel">Cancel</button>
+      <button class="btn" id="ai-go">✨ Generate</button>
+    </div>`);
+  let imageFile = null;
+  el('ai-image').addEventListener('change', (e) => {
+    imageFile = e.target.files[0] || null;
+    el('ai-image-name').textContent = imageFile ? `Selected: ${imageFile.name}` : '';
+  });
+  el('ai-go').addEventListener('click', async () => {
+    const text = el('ai-text').value.trim();
+    if (!imageFile && !text) { alert('Add a photo or paste the plan text first.'); return; }
+    const status = el('ai-status'), btn = el('ai-go');
+    btn.disabled = true; status.style.color = 'var(--muted)';
+    status.textContent = '⏳ Reading the plan and researching activities — this can take up to a minute…';
+    try {
+      const payload = {
+        weekStartDate: el('ai-week').value || todayISO(),
+        childContext: el('ai-context').value.trim() || undefined,
+      };
+      if (text) payload.planText = text;
+      if (imageFile) { payload.planImageBase64 = await fileToBase64(imageFile); payload.planImageMediaType = imageFile.type || 'image/jpeg'; }
+      const result = await cloud.callFunction('generateHomePlan', payload);
+      const plan = result?.plan;
+      if (!plan || !Array.isArray(plan.days)) throw new Error('No plan was returned.');
+      plan.weekStartDate = payload.weekStartDate;
+      aiPreviewModal(plan);
+    } catch (e) {
+      status.style.color = 'var(--red)';
+      status.textContent = 'Generation failed: ' + (e?.message || e);
+      btn.disabled = false;
+    }
+  });
+}
+
+function aiPreviewModal(plan) {
+  const days = plan.days.map((d, i) => `
+    <div class="card" style="padding:12px;margin-bottom:8px">
+      <div style="font-weight:700">${esc(d.label || ('Day ' + (i + 1)))}${d.area ? ` · <span class="muted">${esc(d.area)}</span>` : ''}</div>
+      ${(d.steps || []).map((s) => `<div style="font-size:13px;margin-top:4px">• ${esc(s.text)}${s.minutes ? ` <span class="muted">(${s.minutes}m)</span>` : ''}</div>`).join('')}
+      ${d.video ? `<div style="font-size:12px;color:var(--brand);margin-top:6px">▶ ${esc(d.video.title)}</div>` : ''}
+    </div>`).join('');
+  openModal(`
+    <h2>Review the plan</h2>
+    ${plan.week_focus ? `<p class="modal-sub">${esc(plan.week_focus)}</p>` : ''}
+    ${plan.disclaimer ? `<p class="muted" style="font-size:12px;margin:0 0 10px">⚠️ ${esc(plan.disclaimer)}</p>` : ''}
+    ${days}
+    <div class="btn-row" style="margin-top:8px">
+      <button class="btn secondary" data-act="ai-generate">↻ Start over</button>
+      <button class="btn" id="ai-save">Save plan</button>
+    </div>`);
+  el('ai-save').addEventListener('click', async () => {
+    await saveAiPlan(plan); closeModal(); state.view = 'cta'; render();
+  });
+}
+
+async function aiViewModal() {
+  const plan = await getAiPlan();
+  if (!plan) return aiGenerateModal();
+  let html = '';
+  for (let i = 0; i < plan.days.length; i++) {
+    const d = plan.days[i];
+    const date = addDays(plan.weekStartDate, i);
+    let steps = '';
+    for (let j = 0; j < (d.steps || []).length; j++) {
+      const done = !!(await DB.get(STORE.checks, aiCheckKey(date, i, j)));
+      steps += `<div class="check-item ${done ? 'done' : ''}" data-act="toggle-ai-d" data-date="${date}" data-d="${i}" data-s="${j}">
+        <div class="check-box">${done ? '✓' : ''}</div><div class="check-text">${esc(d.steps[j].text)}</div></div>`;
+    }
+    html += `<div class="card" style="margin-bottom:8px">
+      <div style="font-weight:700">${esc(d.label || ('Day ' + (i + 1)))} <span class="muted" style="font-weight:400;font-size:12px">· ${fmtDate(date)}</span></div>
+      ${steps}
+      ${d.video ? `<a class="btn secondary small" href="${esc(d.video.url)}" target="_blank" rel="noopener" style="margin-top:6px">▶ ${esc(d.video.title.slice(0, 40))}…</a>` : ''}
+    </div>`;
+  }
+  openModal(`
+    <h2>This week's plan</h2>
+    ${plan.week_focus ? `<p class="modal-sub">${esc(plan.week_focus)}</p>` : ''}
+    ${html}
+    <div class="btn-row" style="margin-top:8px">
+      <button class="btn secondary" data-act="ai-generate">↻ Regenerate</button>
+      <button class="btn danger" id="ai-clear">Delete plan</button>
+    </div>
+    <button class="btn secondary" data-act="cancel" style="margin-top:10px">Close</button>`);
+  el('ai-clear').addEventListener('click', async () => {
+    if (confirm('Delete this AI plan?')) { await clearAiPlan(); closeModal(); render(); }
   });
 }
 
@@ -893,6 +1069,10 @@ document.addEventListener('click', async (e) => {
     case 'count-dec': return adjustCompleted(-1);
     case 'add-cta': return addCtaModal();
     case 'add-res': return addResModal();
+    case 'ai-generate': return aiGenerateModal();
+    case 'ai-view': return aiViewModal();
+    case 'toggle-ai': { await toggleAi(todayISO(), +t.dataset.d, +t.dataset.s); return render(); }
+    case 'toggle-ai-d': { await toggleAi(t.dataset.date, +t.dataset.d, +t.dataset.s); return aiViewModal(); }
     case 'toggle-cta': {
       const key = `${todayISO()}|${t.dataset.id}`;
       const cur = await DB.get(STORE.checks, key);
