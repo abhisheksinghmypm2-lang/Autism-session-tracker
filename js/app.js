@@ -266,6 +266,57 @@ function imageToAvatarDataUrl(file, size = 220) {
   });
 }
 
+// Aspect-preserving resize to a JPEG data URL (milestone photos).
+function imageToDataUrl(file, max = 800) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let w = img.width, h = img.height;
+      if (Math.max(w, h) > max) { const r = max / Math.max(w, h); w = Math.round(w * r); h = Math.round(h * r); }
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      resolve(c.toDataURL('image/jpeg', 0.82));
+    };
+    img.onerror = reject;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+/* ---------------- milestones (stored in kv) ---------------- */
+const getMilestones = async () => (await DB.get(STORE.kv, 'milestones'))?.value || [];
+const saveMilestones = (arr) => DB.put(STORE.kv, { key: 'milestones', value: arr });
+const MILESTONE_CATS = { Communication: '#2563eb', Social: '#7c3aed', Independence: '#0f766e', Emotional: '#f59e0b', Physical: '#ea580c', Other: '#9b958a' };
+
+// Lightweight confetti burst (no library): a transient canvas of falling pieces.
+function confettiBurst() {
+  const c = document.createElement('canvas');
+  c.style.cssText = 'position:fixed;inset:0;z-index:60;pointer-events:none';
+  c.width = innerWidth; c.height = innerHeight;
+  document.body.appendChild(c);
+  const ctx = c.getContext('2d');
+  const colors = ['#0f766e', '#f59e0b', '#22c55e', '#2563eb', '#7c3aed', '#ef4444'];
+  const N = 90;
+  const parts = Array.from({ length: N }, () => ({
+    x: c.width / 2, y: c.height * 0.36,
+    vx: (Math.cos(Math.random() * 6.283)) * (4 + Math.random() * 7),
+    vy: (Math.sin(Math.random() * 6.283)) * (4 + Math.random() * 7) - 4,
+    s: 5 + Math.random() * 6, rot: Math.random() * 6.283,
+    col: colors[(Math.random() * colors.length) | 0],
+  }));
+  let frame = 0;
+  (function tick() {
+    ctx.clearRect(0, 0, c.width, c.height);
+    frame++;
+    for (const p of parts) {
+      p.vy += 0.35; p.x += p.vx; p.y += p.vy; p.rot += 0.2;
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+      ctx.fillStyle = p.col; ctx.globalAlpha = Math.max(0, 1 - frame / 80);
+      ctx.fillRect(-p.s / 2, -p.s / 2, p.s, p.s * 0.6); ctx.restore();
+    }
+    if (frame < 80) requestAnimationFrame(tick); else c.remove();
+  })();
+}
+
 function planCardHtml(p, st) {
   const pct = st.total ? Math.round((st.attended / st.total) * 100) : 0;
   const end = cycleEnd(p);
@@ -285,6 +336,7 @@ function planCardHtml(p, st) {
 async function renderDashboard(v) {
   await loadPrograms();
   const child = await getChild();
+  const milestones = await getMilestones();
   const ctas = await getCTAs();
   const counts = await checkCountsByDate();
   const doneToday = counts[todayISO()] || 0;
@@ -377,9 +429,27 @@ async function renderDashboard(v) {
       <button class="btn" data-act="edit-child">Set up profile</button>
     </div>`;
 
+  const latest = milestones.slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+  const msCard = latest
+    ? `<div class="card ms-recent" data-act="milestones" role="button">
+        <div class="ms-star">★</div>
+        <div style="flex:1;min-width:0">
+          <div class="ms-recent-label">Latest milestone</div>
+          <div class="ms-recent-text">${esc(latest.text)}</div>
+          <div class="muted" style="font-size:12px;margin-top:2px">${fmtDate(latest.date)} · see all milestones →</div>
+        </div>
+      </div>`
+    : (child ? `<div class="card ms-recent" data-act="add-milestone" role="button">
+        <div class="ms-star">★</div>
+        <div style="flex:1"><div class="ms-recent-text">Celebrate a win 🌟</div>
+          <div class="muted" style="font-size:12.5px;margin-top:2px">Add ${esc(childName(child))}'s first milestone</div></div>
+        <div class="chev">›</div>
+      </div>` : '');
+
   v.innerHTML = `
     ${dashHeaderHtml(child)}
     ${welcome}
+    ${msCard}
     <div class="track-head">${ic('institute')}<span>${TRACKS.Institute.label}</span></div>
     ${instBlock}
     <div class="track-head" style="margin-top:24px">${ic('home')}<span>${TRACKS.Home.label}</span></div>
@@ -930,6 +1000,102 @@ async function importData(file) {
   closeModal(); alert('Backup restored.'); state.view = 'dashboard'; render();
 }
 
+/* ---------------- Milestone wall ---------------- */
+function milestoneCardHtml(m) {
+  const color = MILESTONE_CATS[m.category] || MILESTONE_CATS.Other;
+  return `<div class="ms-card">
+    ${m.photo ? `<img class="ms-photo" src="${m.photo}" alt="">` : ''}
+    <div class="ms-star">★</div>
+    <div class="ms-text">${esc(m.text)}</div>
+    <div class="ms-meta"><span class="ms-cat" style="background:${color}">${esc(m.category || 'Other')}</span><span class="ms-date">${fmtDate(m.date)}</span></div>
+    <button class="btn secondary small" data-act="share-milestone" data-id="${m.id}">Share this moment</button>
+  </div>`;
+}
+
+async function milestonesModal() {
+  const child = await getChild();
+  const ms = (await getMilestones()).slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const body = ms.length
+    ? `<div class="ms-grid">${ms.map(milestoneCardHtml).join('')}</div>
+       <button class="btn" data-act="add-milestone" style="margin-top:12px">+ Add milestone</button>`
+    : `<div class="empty"><div class="big">✨</div>
+        <p>Every small win counts. What did ${esc(childName(child))} do today that made you smile?</p>
+        <button class="btn" data-act="add-milestone" style="max-width:240px;margin:0 auto">+ Add milestone</button></div>`;
+  openModal(`<h2>🌟 Milestones</h2>
+    <p class="modal-sub">${esc(childName(child))}'s moments worth remembering</p>
+    ${body}
+    <button class="btn secondary" data-act="cancel" style="margin-top:12px">Close</button>`);
+}
+
+function addMilestoneModal() {
+  const cats = Object.keys(MILESTONE_CATS).map((c, i) =>
+    `<button type="button" class="chip-select ${i === 0 ? 'on' : ''}" data-c="${c}">${c}</button>`).join('');
+  openModal(`<h2>Add a milestone 🌟</h2>
+    <label class="field"><span>What happened?</span>
+      <textarea id="ms-text" placeholder="e.g. Said 'thank you' unprompted for the first time"></textarea></label>
+    <label class="field"><span>Category</span><div class="chip-row" id="ms-cats">${cats}</div></label>
+    <label class="field"><span>Date</span><input id="ms-date" type="date" value="${todayISO()}"></label>
+    <label class="btn secondary" style="cursor:pointer">📷 Add photo (optional)
+      <input id="ms-photo" type="file" accept="image/*" hidden></label>
+    <div id="ms-photo-name" class="muted" style="font-size:12px;margin:6px 0"></div>
+    <div class="btn-row" style="margin-top:8px">
+      <button class="btn secondary" data-act="cancel">Cancel</button>
+      <button class="btn" id="ms-save">Save milestone</button>
+    </div>`);
+  let cat = 'Communication', photo = null;
+  el('ms-cats').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-c]'); if (!b) return;
+    cat = b.dataset.c; el('ms-cats').querySelectorAll('.chip-select').forEach((x) => x.classList.remove('on')); b.classList.add('on');
+  });
+  el('ms-photo').addEventListener('change', async (e) => {
+    const f = e.target.files[0]; if (!f) return; photo = await imageToDataUrl(f, 700); el('ms-photo-name').textContent = 'Photo added ✓';
+  });
+  el('ms-save').addEventListener('click', async () => {
+    const text = el('ms-text').value.trim();
+    if (!text) { alert('Add a few words about the moment.'); return; }
+    const ms = await getMilestones();
+    ms.push({ id: 'ms-' + uid(), text, category: cat, date: el('ms-date').value || todayISO(), photo: photo || null, createdAt: Date.now() });
+    await saveMilestones(ms);
+    closeModal(); render(); confettiBurst();
+  });
+}
+
+async function shareMilestone(id) {
+  const child = await getChild();
+  const m = (await getMilestones()).find((x) => x.id === id);
+  if (!m) return;
+  const W = 1080, H = 1080;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+  // teal gradient background
+  const g = ctx.createLinearGradient(0, 0, W, H);
+  g.addColorStop(0, '#0f766e'); g.addColorStop(1, '#0b5650');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#f59e0b'; ctx.font = '120px serif'; ctx.textAlign = 'center'; ctx.fillText('★', W / 2, 280);
+  // wrapped milestone text
+  ctx.fillStyle = '#ffffff'; ctx.font = 'bold 56px -apple-system, Arial, sans-serif';
+  const words = m.text.split(' '); let line = '', y = 440; const lines = [];
+  for (const w of words) { if (ctx.measureText(line + w).width > W - 200 && line) { lines.push(line.trim()); line = ''; } line += w + ' '; }
+  lines.push(line.trim());
+  for (const l of lines.slice(0, 6)) { ctx.fillText(l, W / 2, y); y += 74; }
+  ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.font = '36px -apple-system, Arial, sans-serif';
+  ctx.fillText(`${m.category} · ${fmtDate(m.date)}`, W / 2, y + 30);
+  ctx.fillStyle = 'rgba(255,255,255,.7)'; ctx.font = '32px -apple-system, Arial, sans-serif';
+  ctx.fillText(`${childName(child)} · Autism Central`, W / 2, H - 80);
+  const blob = await new Promise((res) => c.toBlob(res, 'image/png'));
+  const file = new File([blob], 'milestone.png', { type: 'image/png' });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'A milestone 🌟' });
+      return;
+    }
+  } catch {}
+  // fallback: download
+  const url = URL.createObjectURL(blob); const a = document.createElement('a');
+  a.href = url; a.download = 'milestone.png'; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 async function childProfileModal() {
   const child = (await getChild()) || { displayName: '', dob: '', therapyTypes: [], photo: null };
   const chips = THERAPY_TYPES.map((t) =>
@@ -1181,6 +1347,9 @@ document.addEventListener('click', async (e) => {
     case 'add-cta': return addCtaModal();
     case 'add-res': return addResModal();
     case 'edit-child': return childProfileModal();
+    case 'milestones': return milestonesModal();
+    case 'add-milestone': return addMilestoneModal();
+    case 'share-milestone': return shareMilestone(t.dataset.id);
     case 'ai-generate': return aiGenerateModal();
     case 'ai-view': return aiViewModal();
     case 'toggle-ai': { await toggleAi(todayISO(), +t.dataset.d, +t.dataset.s); return render(); }
