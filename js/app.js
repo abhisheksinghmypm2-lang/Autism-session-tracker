@@ -232,6 +232,40 @@ function greetingText() {
   return `${word} · ${new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}`;
 }
 
+/* ---------------- child profile (the app's one child, stored in kv) ---------------- */
+const getChild = async () => (await DB.get(STORE.kv, 'childProfile'))?.value || null;
+const saveChild = (c) => DB.put(STORE.kv, { key: 'childProfile', value: c });
+const THERAPY_TYPES = ['Speech', 'OT', 'ABA', 'PT', 'Other'];
+const childName = (child) => (child && child.displayName) ? child.displayName : 'your child';
+
+function dashHeaderHtml(child) {
+  const word = (() => { const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; })();
+  const avatar = child?.photo
+    ? `<img class="avatar" src="${child.photo}" alt="">`
+    : `<div class="avatar avatar-fallback">${child?.displayName ? esc(child.displayName[0].toUpperCase()) : '🙂'}</div>`;
+  const line = child?.displayName ? `${word}, ${esc(child.displayName)}'s parent 👋` : `${word} 👋`;
+  const date = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  return `<div class="dash-header" data-act="edit-child" role="button">
+    ${avatar}
+    <div class="dash-greet"><span class="dash-hi">${line}</span><span class="dash-date">${date}</span></div>
+  </div>`;
+}
+
+// Crop+resize an uploaded image to a small square JPEG data URL (avatar storage).
+function imageToAvatarDataUrl(file, size = 220) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const s = Math.min(img.width, img.height);
+      const c = document.createElement('canvas'); c.width = c.height = size;
+      c.getContext('2d').drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
+      resolve(c.toDataURL('image/jpeg', 0.82));
+    };
+    img.onerror = reject;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
 function planCardHtml(p, st) {
   const pct = st.total ? Math.round((st.attended / st.total) * 100) : 0;
   const end = cycleEnd(p);
@@ -250,6 +284,7 @@ function planCardHtml(p, st) {
 /* ---------------- Dashboard (two tracks) ---------------- */
 async function renderDashboard(v) {
   await loadPrograms();
+  const child = await getChild();
   const ctas = await getCTAs();
   const counts = await checkCountsByDate();
   const doneToday = counts[todayISO()] || 0;
@@ -334,8 +369,17 @@ async function renderDashboard(v) {
     </div>`;
   const homeBlock = streakBanner + todayCard + heatCard + home.map(({ p, st }) => planCardHtml(p, st)).join('');
 
+  const welcome = child ? '' : `
+    <div class="card welcome-card" data-act="edit-child" role="button">
+      <div class="welcome-emoji">💛</div>
+      <h2>Welcome to Autism Central</h2>
+      <p class="sub" style="margin:4px 0 12px">A loving record of your child's journey. Start by adding their profile — it personalizes everything.</p>
+      <button class="btn" data-act="edit-child">Set up profile</button>
+    </div>`;
+
   v.innerHTML = `
-    <p class="greeting">${greetingText()}</p>
+    ${dashHeaderHtml(child)}
+    ${welcome}
     <div class="track-head">${ic('institute')}<span>${TRACKS.Institute.label}</span></div>
     ${instBlock}
     <div class="track-head" style="margin-top:24px">${ic('home')}<span>${TRACKS.Home.label}</span></div>
@@ -886,13 +930,69 @@ async function importData(file) {
   closeModal(); alert('Backup restored.'); state.view = 'dashboard'; render();
 }
 
+async function childProfileModal() {
+  const child = (await getChild()) || { displayName: '', dob: '', therapyTypes: [], photo: null };
+  const chips = THERAPY_TYPES.map((t) =>
+    `<button type="button" class="chip-select ${child.therapyTypes.includes(t) ? 'on' : ''}" data-t="${t}">${t}</button>`).join('');
+  const avatarInner = child.photo
+    ? `<img class="avatar" src="${child.photo}" alt="" style="width:80px;height:80px">`
+    : (child.displayName ? esc(child.displayName[0].toUpperCase()) : '🙂');
+  openModal(`
+    <h2>${child.displayName ? 'Edit profile' : "Your child's profile"}</h2>
+    <p class="modal-sub">This personalizes the app. A nickname is perfectly fine.</p>
+    <div class="avatar-edit">
+      <label class="avatar-pick">
+        <div id="cp-avatar" class="avatar avatar-fallback" style="width:80px;height:80px;font-size:30px">${avatarInner}</div>
+        <span class="avatar-cam">📷</span>
+        <input id="cp-photo" type="file" accept="image/*" hidden>
+      </label>
+    </div>
+    <label class="field"><span>What would you like to call your child in the app?</span>
+      <input id="cp-name" value="${esc(child.displayName)}" placeholder="Nickname is fine"></label>
+    <label class="field"><span>Date of birth</span>
+      <input id="cp-dob" type="date" value="${child.dob || ''}"></label>
+    <label class="field"><span>What therapies does your child attend?</span>
+      <div class="chip-row" id="cp-therapies">${chips}</div></label>
+    <div class="btn-row" style="margin-top:8px">
+      <button class="btn secondary" data-act="cancel">Cancel</button>
+      <button class="btn" id="cp-save">Save profile</button>
+    </div>`);
+  let photo = child.photo;
+  const selected = new Set(child.therapyTypes);
+  el('cp-photo').addEventListener('change', async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    photo = await imageToAvatarDataUrl(f);
+    el('cp-avatar').innerHTML = `<img class="avatar" src="${photo}" alt="" style="width:80px;height:80px">`;
+  });
+  el('cp-therapies').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-t]'); if (!b) return;
+    const t = b.dataset.t;
+    if (selected.has(t)) { selected.delete(t); b.classList.remove('on'); }
+    else { selected.add(t); b.classList.add('on'); }
+  });
+  el('cp-save').addEventListener('click', async () => {
+    const name = el('cp-name').value.trim();
+    if (!name) { alert("Please enter your child's name or a nickname."); return; }
+    await saveChild({ displayName: name, dob: el('cp-dob').value || '', therapyTypes: [...selected], photo: photo || null });
+    closeModal(); render();
+  });
+}
+
 async function settingsModal() {
   const s = await getSettings();
+  const child = await getChild();
   openModal(`
     <h2>Settings</h2>
     <p class="modal-sub">Your data is stored privately on this device.</p>
 
-    <div class="section-title" style="margin-left:0">${ic('home')}Account & sync</div>
+    <div class="section-title" style="margin-left:0">🧒 Child profile</div>
+    <div class="settings-row">
+      <div><div style="font-weight:600">${child?.displayName ? esc(child.displayName) : 'Not set up yet'}</div>
+        <div class="muted" style="font-size:12.5px">${child?.therapyTypes?.length ? esc(child.therapyTypes.join(' · ')) : 'Name, photo, therapies'}</div></div>
+      <button class="btn secondary small" data-act="edit-child">${child?.displayName ? 'Edit' : 'Set up'}</button>
+    </div>
+
+    <div class="section-title" style="margin-left:0;margin-top:22px">${ic('home')}Account & sync</div>
     ${cloudSyncHtml()}
 
     <div class="section-title" style="margin-left:0;margin-top:22px">${ic('flame')}Daily reminder</div>
@@ -1080,6 +1180,7 @@ document.addEventListener('click', async (e) => {
     case 'count-dec': return adjustCompleted(-1);
     case 'add-cta': return addCtaModal();
     case 'add-res': return addResModal();
+    case 'edit-child': return childProfileModal();
     case 'ai-generate': return aiGenerateModal();
     case 'ai-view': return aiViewModal();
     case 'toggle-ai': { await toggleAi(todayISO(), +t.dataset.d, +t.dataset.s); return render(); }
