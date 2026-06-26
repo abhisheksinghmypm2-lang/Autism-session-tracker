@@ -1,7 +1,7 @@
 {
   "name": "autism-central-functions",
   "description": "Cloud Functions: generate an AI home-activity plan from a therapist's weekly plan",
-  "engines": { "node": "20" },
+  "engines": { "node": "22" },
   "main": "index.js",
   "private": true,
   "dependencies": {
