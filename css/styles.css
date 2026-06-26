@@ -417,6 +417,37 @@ body.is-offline .offline-banner { transform: translateY(0); }
 .pill.yes { background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--green); }
 .pill.no { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
 .pill.none { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
+.pill.sched { background: color-mix(in srgb, var(--brand) 16%, transparent); color: var(--brand); }
+
+/* ---- Upcoming-sessions schedule (Sessions tab) ---- */
+.sch-card .sch-strip { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 12px; scrollbar-width: none; }
+.sch-card .sch-strip::-webkit-scrollbar { display: none; }
+.sch-pill {
+  position: relative; flex: 0 0 auto; width: 44px; display: flex; flex-direction: column; align-items: center;
+  gap: 2px; padding: 8px 0 12px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line);
+}
+.sch-pill .sch-dow { font-size: 11px; color: var(--muted); }
+.sch-pill .sch-dom { font-size: 16px; font-weight: 800; color: var(--ink); }
+.sch-pill.today { background: var(--brand); border-color: var(--brand); }
+.sch-pill.today .sch-dow, .sch-pill.today .sch-dom { color: #fff; }
+.sch-pill .sch-dot {
+  position: absolute; bottom: 3px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px;
+  background: var(--brand); color: #fff; font-size: 10px; font-weight: 800; display: flex; align-items: center; justify-content: center;
+}
+.sch-pill.today .sch-dot { background: #fff; color: var(--brand); }
+.sch-item { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); cursor: pointer; }
+.sch-item:first-child { border-top: none; }
+.sch-item .sch-when { flex: 0 0 auto; min-width: 84px; }
+.sch-item .sch-rel { font-weight: 800; font-size: 13px; color: var(--brand); }
+.sch-item .sch-body { flex: 1; min-width: 0; }
+.sch-item .sch-name { font-size: 14px; font-weight: 600; }
+.sch-item .chev { color: var(--muted); font-size: 20px; }
+
+/* ---- Dashboard "today's session" reminder ---- */
+.sess-reminder { display: flex; align-items: center; gap: 12px; background: color-mix(in srgb, var(--brand) 12%, var(--bg-1)); border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent); cursor: pointer; }
+.sess-reminder.soft { background: var(--bg-1); }
+.sess-reminder .sr-ico { font-size: 26px; }
+.sess-reminder .chev { margin-left: auto; color: var(--muted); font-size: 22px; }
 
 /* ---------- Buttons ---------- */
 .btn {

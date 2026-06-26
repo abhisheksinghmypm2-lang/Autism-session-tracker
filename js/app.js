@@ -78,6 +78,13 @@ function addDays(iso, n) {
   d.setDate(d.getDate() + n);
   return toISO(d);
 }
+// "Today" / "Tomorrow" / "Mon, 30 Jun" — friendly relative label for a date.
+function relativeDay(iso) {
+  if (!iso) return '';
+  if (iso === todayISO()) return 'Today';
+  if (iso === addDays(todayISO(), 1)) return 'Tomorrow';
+  return new Date(iso + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
 
 /* ---------------- app state ---------------- */
 const state = { view: 'dashboard', programId: null, programs: [], sessions: [], resFilter: 'All', sessionsTab: 'sessions', progressRange: 'month', dailyDate: '', sensoryOpen: false };
@@ -149,6 +156,16 @@ async function adjustCompleted(delta) {
 }
 function blankSession(programId, number, date = '') {
   return { id: uid(), programId, number, date, status: 'scheduled', notes: '', documents: [] };
+}
+// Scheduled (not-yet-logged) sessions that have a planned date, across all
+// programs, enriched with program info and sorted by date ascending.
+async function getScheduledSessions() {
+  const out = [];
+  for (const p of state.programs) {
+    const sess = await DB.byIndex(STORE.sessions, 'programId', p.id);
+    for (const s of sess) if (s.status === 'scheduled' && s.plannedDate) out.push({ ...s, pName: p.name, pType: p.type });
+  }
+  return out.sort((a, b) => (a.plannedDate < b.plannedDate ? -1 : 1));
 }
 async function deleteProgram(id) {
   const sess = await DB.byIndex(STORE.sessions, 'programId', id);
@@ -512,9 +529,28 @@ async function renderDashboard(v) {
       <p class="sub" style="margin:6px 0 0">Here are some resources just for you →</p>
     </div>` : '';
 
+  // gentle in-app reminder of sessions scheduled today / this week
+  const scheduled = await getScheduledSessions();
+  const todaySess = scheduled.filter((s) => s.plannedDate === todayISO());
+  const weekSess = scheduled.filter((s) => s.plannedDate > todayISO() && s.plannedDate <= addDays(todayISO(), 7));
+  const reminderCard = todaySess.length
+    ? `<div class="card sess-reminder" data-act="go-sessions" role="button">
+        <div class="sr-ico">📅</div>
+        <div style="flex:1"><div style="font-weight:800">${todaySess.length === 1
+          ? `${esc(childName(child))} has ${esc(todaySess[0].pName)} today`
+          : `${todaySess.length} sessions scheduled today`}</div>
+          <div class="sub" style="margin-top:2px">${todaySess.map((s) => esc(s.pType)).join(' · ')}</div></div>
+        <div class="chev">›</div></div>`
+    : (weekSess.length ? `<div class="card sess-reminder soft" data-act="go-sessions" role="button">
+        <div class="sr-ico">📆</div>
+        <div style="flex:1"><div style="font-weight:700">${weekSess.length} session${weekSess.length === 1 ? '' : 's'} coming up this week</div>
+          <div class="sub" style="margin-top:2px">Next: ${esc(weekSess[0].pName)} · ${relativeDay(weekSess[0].plannedDate)}</div></div>
+        <div class="chev">›</div></div>` : '');
+
   v.innerHTML = `
     ${dashHeaderHtml(child)}
     ${welcome}
+    ${reminderCard}
     ${supportCard}
     ${msCard}
     <div class="track-head">${ic('institute')}<span>${TRACKS.Institute.label}</span></div>
@@ -543,6 +579,7 @@ async function renderPlans(v) {
       <button class="btn" data-act="new-plan" style="max-width:240px;margin:0 auto">New plan</button></div>`;
     return;
   }
+  const scheduleHtml = await scheduleSectionHtml();
   const rows = [];
   for (const p of state.programs) {
     const st = stats(p, await DB.byIndex(STORE.sessions, 'programId', p.id));
@@ -568,7 +605,38 @@ async function renderPlans(v) {
         </div>`;
     }
   }
-  v.innerHTML = seg + tnBanner + html;
+  v.innerHTML = seg + tnBanner + scheduleHtml + html;
+}
+
+// 7-day schedule strip + upcoming list, built from sessions that have a
+// planned date. Renders nothing until at least one session is scheduled.
+async function scheduleSectionHtml() {
+  const upcoming = await getScheduledSessions();
+  const future = upcoming.filter((s) => s.plannedDate >= todayISO());
+  if (!future.length) return '';
+  // 7-day strip: count scheduled sessions per day from today
+  const strip = [];
+  for (let i = 0; i < 7; i++) {
+    const d = addDays(todayISO(), i);
+    const dt = new Date(d + 'T00:00:00');
+    const count = future.filter((s) => s.plannedDate === d).length;
+    strip.push(`<div class="sch-pill${i === 0 ? ' today' : ''}${count ? ' has' : ''}">
+      <span class="sch-dow">${dt.toLocaleDateString(undefined, { weekday: 'short' })}</span>
+      <span class="sch-dom">${dt.getDate()}</span>
+      ${count ? `<span class="sch-dot">${count}</span>` : ''}
+    </div>`);
+  }
+  const list = future.slice(0, 8).map((s) => `
+    <div class="sch-item" data-act="session" data-id="${s.id}">
+      <div class="sch-when"><span class="sch-rel">${relativeDay(s.plannedDate)}</span></div>
+      <div class="sch-body"><span class="tag">${esc(s.pType)}</span> <span class="sch-name">${esc(s.pName)} · Session ${s.number}</span></div>
+      <div class="chev">›</div>
+    </div>`).join('');
+  return `<div class="card sch-card">
+    <h2 style="margin-bottom:10px">📅 Upcoming sessions</h2>
+    <div class="sch-strip">${strip.join('')}</div>
+    <div class="sch-list">${list}</div>
+  </div>`;
 }
 
 /* ---------------- Progress view (inside the Sessions tab) ---------------- */
@@ -762,13 +830,16 @@ async function renderProgram(v) {
   const items = state.sessions.map((s) => {
     const pill = s.status === 'attended' ? '<span class="pill yes">Yes · attended</span>'
       : s.status === 'missed' ? '<span class="pill no">No · missed</span>'
+      : s.plannedDate ? `<span class="pill sched">${relativeDay(s.plannedDate)}</span>`
       : '<span class="pill none">Not logged</span>';
     return `
       <div class="tl-item ${s.status}">
         <div class="tl-node">${s.status === 'attended' ? '✓' : s.status === 'missed' ? '✕' : s.number}</div>
         <div class="tl-card" data-act="session" data-id="${s.id}">
           <div class="tl-top"><span class="tl-num">Session ${s.number}</span>${pill}</div>
-          ${s.date ? `<div class="tl-date">${fmtDate(s.date)}${typeof s.sessionMood === 'number' ? ` · ${CHILD_MOOD[s.sessionMood]}` : ''}</div>` : (s.preTracked ? '<div class="tl-date">Completed before tracking</div>' : '<div class="tl-date">Tap to set date & status</div>')}
+          ${s.date ? `<div class="tl-date">${fmtDate(s.date)}${typeof s.sessionMood === 'number' ? ` · ${CHILD_MOOD[s.sessionMood]}` : ''}</div>`
+            : s.plannedDate ? `<div class="tl-date">Scheduled for ${fmtDate(s.plannedDate)}</div>`
+            : (s.preTracked ? '<div class="tl-date">Completed before tracking</div>' : '<div class="tl-date">Tap to set date & status</div>')}
           ${s.status === 'missed' && s.cancelReason ? `<div class="tl-notes">Reason: ${esc(s.cancelReason)}</div>` : ''}
           ${s.notes ? `<div class="tl-notes">${esc(s.notes)}</div>` : ''}
           ${s.documents?.length ? `<div class="tl-docs">📎 ${s.documents.length} document${s.documents.length === 1 ? '' : 's'}</div>` : ''}
@@ -1100,7 +1171,9 @@ async function sessionModal(id) {
         <button data-status="missed" class="${s.status === 'missed' ? 'on-red' : ''}">Missed · No</button>
       </div>
     </label>
-    <label class="field"><span>Date</span><input id="s-date" type="date" value="${s.date || ''}" /></label>
+    <label class="field" id="planned-field"><span>Scheduled for <span class="muted">(optional)</span></span>
+      <input id="s-planned" type="date" value="${s.plannedDate || ''}" /></label>
+    <label class="field" id="date-field"><span>Date</span><input id="s-date" type="date" value="${s.date || ''}" /></label>
     <div class="field" id="mood-field"><span>How did it go?</span>
       <div class="wb-row" id="s-mood">${CHILD_MOOD.map((e, i) => `<button type="button" class="wb-emoji${s.sessionMood === i ? ' on' : ''}" data-mood="${i}">${e}</button>`).join('')}</div>
     </div>
@@ -1122,6 +1195,9 @@ async function sessionModal(id) {
   let status = s.status;
   let sessionMood = typeof s.sessionMood === 'number' ? s.sessionMood : null;
   const syncFields = () => {
+    const scheduled = status === 'scheduled';
+    el('planned-field').style.display = scheduled ? '' : 'none';   // schedule a future session
+    el('date-field').style.display = scheduled ? 'none' : '';      // record when it happened
     el('mood-field').style.display = status === 'attended' ? '' : 'none';
     el('reason-field').style.display = status === 'missed' ? '' : 'none';
   };
@@ -1162,6 +1238,8 @@ async function sessionModal(id) {
     if (status === 'attended' && sessionMood != null) s.sessionMood = sessionMood; else delete s.sessionMood;
     const reason = el('s-reason').value.trim();
     if (status === 'missed' && reason) s.cancelReason = reason; else delete s.cancelReason;
+    const planned = el('s-planned').value;
+    if (status === 'scheduled' && planned) s.plannedDate = planned; else delete s.plannedDate;
     if (status !== 'scheduled' && !s.date) s.date = todayISO();
     await DB.put(STORE.sessions, s); closeModal(); render();
   });
@@ -1732,6 +1810,7 @@ document.addEventListener('click', async (e) => {
     case 'new-plan': return newPlanModal(t.dataset.track || 'Institute');
     case 'go-cta': state.view = 'cta'; return render();
     case 'go-resources': state.view = 'resources'; return render();
+    case 'go-sessions': state.view = 'sessions'; state.sessionsTab = 'sessions'; return render();
     case 'daily-date': state.dailyDate = t.dataset.date; state.sensoryOpen = false; return render();
     case 'child-mood': await setDayLog(t.dataset.date, { childMood: +t.dataset.score }); return render();
     case 'daily-toggle': {
