@@ -1102,6 +1102,106 @@ function openModal(innerHTML) {
 }
 function closeModal() { el('modal-root').innerHTML = ''; }
 
+/* ---------------- Guided tour (coach marks) ---------------- */
+const TOUR_FLAG = 'ac_tour_seen_v1';
+const TOUR_STEPS = [
+  { center: true, title: 'Welcome to Autism Central 💛',
+    body: "A calm, private place to track your child's therapy journey — sessions, daily moments, and milestones. Here's a 30-second tour." },
+  { sel: '.tab[data-view="dashboard"]', title: 'Home',
+    body: "Your at-a-glance dashboard: attendance, your daily streak, the latest milestone, and a gentle check-in on how *you* are doing." },
+  { sel: '.tab[data-view="sessions"]', title: 'Sessions',
+    body: "Track therapy plans (OT, Speech, ABA). Mark sessions attended or missed, schedule upcoming ones, and see Progress charts + an AI recap." },
+  { sel: '.tab[data-view="cta"]', title: 'Daily',
+    body: "Log a daily moment in seconds — mood, a win, a quick note, sleep & eating. Stuck on a tough day? Tap '💡 Get gentle ideas'." },
+  { sel: '.tab[data-view="resources"]', title: 'Resources',
+    body: 'Helpful, parent-friendly resources and videos for OT, Speech, ABA, and your own wellbeing.' },
+  { sel: '#add-btn', title: 'Add a therapy plan',
+    body: 'Tap + to set up a new plan and start tracking its sessions.' },
+  { sel: '#settings-btn', title: 'Settings & backup',
+    body: 'Set up your child profile, turn on cloud sync, back up your data — and replay this tour anytime.' },
+  { center: true, title: "You're all set 💛",
+    body: 'Start by setting up your child profile, then add your first therapy plan. You can replay this tour from Settings whenever you like.' },
+];
+
+let tourIdx = 0;
+function startTour() {
+  closeModal();
+  tourIdx = 0;
+  if (!el('tour-root')) {
+    const d = document.createElement('div');
+    d.id = 'tour-root';
+    document.body.appendChild(d);
+  }
+  renderTourStep();
+  window.addEventListener('resize', renderTourStep);
+}
+function endTour() {
+  try { localStorage.setItem(TOUR_FLAG, '1'); } catch {}
+  window.removeEventListener('resize', renderTourStep);
+  const r = el('tour-root'); if (r) r.remove();
+}
+function renderTourStep() {
+  const root = el('tour-root'); if (!root) return;
+  const step = TOUR_STEPS[tourIdx];
+  const total = TOUR_STEPS.length;
+  const isLast = tourIdx === total - 1;
+  const target = step.sel ? document.querySelector(step.sel) : null;
+  const rect = target ? target.getBoundingClientRect() : null;
+
+  // spotlight box (skipped for centered steps)
+  let spot = '';
+  if (rect) {
+    const pad = 8;
+    spot = `<div class="tour-spot" style="left:${rect.left - pad}px;top:${rect.top - pad}px;width:${rect.width + pad * 2}px;height:${rect.height + pad * 2}px"></div>`;
+  }
+
+  // tooltip placement
+  const dots = TOUR_STEPS.map((_, i) => `<span class="tour-dot ${i === tourIdx ? 'on' : ''}"></span>`).join('');
+  const tip = `<div class="tour-tip" id="tour-tip">
+      <div class="tour-title">${esc(step.title)}</div>
+      <div class="tour-body">${esc(step.body).replace(/\*([^*]+)\*/g, '<em>$1</em>')}</div>
+      <div class="tour-dots">${dots}</div>
+      <div class="tour-actions">
+        <button class="tour-skip" data-tour="skip">${isLast ? '' : 'Skip'}</button>
+        <div class="tour-nav">
+          ${tourIdx > 0 ? '<button class="btn secondary small" data-tour="back">Back</button>' : ''}
+          <button class="btn small" data-tour="next">${isLast ? 'Done' : 'Next'}</button>
+        </div>
+      </div>
+    </div>`;
+
+  root.className = rect ? 'tour' : 'tour tour-center';
+  root.innerHTML = `<div class="tour-backdrop${rect ? '' : ' dim'}"></div>${spot}${tip}`;
+
+  // position the tooltip
+  const tipEl = el('tour-tip');
+  if (rect && tipEl) {
+    const tr = tipEl.getBoundingClientRect();
+    const margin = 12;
+    let top, left = Math.min(Math.max(margin, rect.left + rect.width / 2 - tr.width / 2), window.innerWidth - tr.width - margin);
+    if (rect.top > window.innerHeight / 2) top = rect.top - tr.height - margin;     // target low → tip above
+    else top = rect.bottom + margin;                                               // target high → tip below
+    top = Math.min(Math.max(margin, top), window.innerHeight - tr.height - margin);
+    tipEl.style.left = left + 'px';
+    tipEl.style.top = top + 'px';
+  }
+}
+function maybeStartTour() {
+  let seen = false;
+  try { seen = !!localStorage.getItem(TOUR_FLAG); } catch {}
+  if (!seen) setTimeout(startTour, 600);  // let the first render settle
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-tour]'); if (!b) return;
+  const act = b.dataset.tour;
+  if (act === 'skip') return endTour();
+  if (act === 'back') { tourIdx = Math.max(0, tourIdx - 1); return renderTourStep(); }
+  if (act === 'next') {
+    if (tourIdx >= TOUR_STEPS.length - 1) return endTour();
+    tourIdx++; return renderTourStep();
+  }
+});
+
 /* ---------------- New plan modal ---------------- */
 function newPlanModal(defaultTrack = 'Institute') {
   openModal(`
@@ -1758,6 +1858,12 @@ async function settingsModal() {
         <input type="file" id="import-file" accept="application/json,.json" hidden></label>
     </div>
 
+    <div class="section-title" style="margin-left:0;margin-top:22px">🧭 Help</div>
+    <div class="settings-row">
+      <div><div style="font-weight:600">Guided tour</div><div class="muted" style="font-size:12.5px">A quick walkthrough of the app</div></div>
+      <button class="btn secondary small" data-act="replay-tour">Replay tour</button>
+    </div>
+
     <div class="section-title" style="margin-left:0;margin-top:22px">🗑 Start fresh</div>
     <p class="muted" style="font-size:12.5px;margin:0 0 10px">Erase everything and begin with a clean slate${cloud && currentUser ? ' — clears this device <em>and</em> your synced cloud data' : ''}.</p>
     <button class="btn danger" id="delete-all">Delete all data & start fresh</button>
@@ -1955,6 +2061,7 @@ document.addEventListener('click', async (e) => {
     case 'add-res': return addResModal();
     case 'res-filter': state.resFilter = t.dataset.cat; return render();
     case 'open-settings': return settingsModal();
+    case 'replay-tour': closeModal(); return startTour();
     case 'sess-tab': state.sessionsTab = t.dataset.tab; return render();
     case 'prog-range': state.progressRange = t.dataset.range; return render();
     case 'export-report': return exportReport();
@@ -2065,3 +2172,4 @@ setInterval(maybeRemind, 5 * 60 * 1000);
 
 render();
 if (CLOUD_ENABLED) initCloud();   // onUser callback re-renders once auth state is known
+maybeStartTour();                 // first-launch guided tour
