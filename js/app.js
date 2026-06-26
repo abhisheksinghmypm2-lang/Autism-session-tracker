@@ -1521,6 +1521,11 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 }
 
+/* offline banner — logging never blocks; data syncs when back online */
+window.addEventListener('offline', () => document.body.classList.add('is-offline'));
+window.addEventListener('online', () => document.body.classList.remove('is-offline'));
+if (!navigator.onLine) document.body.classList.add('is-offline');
+
 /* reminders: check at boot, when returning to the app, and periodically while open */
 maybeRemind();
 document.addEventListener('visibilitychange', () => { if (!document.hidden) maybeRemind(); });
