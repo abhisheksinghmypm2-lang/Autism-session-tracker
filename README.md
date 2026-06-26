@@ -31,7 +31,7 @@ You add it to your iPhone home screen and it behaves like a normal app (own icon
 You don't strictly need this, but it's the fastest way to see it:
 
 ```bash
-cd ~/"Autism Ios App"
+cd ~/AutismIosApp
 python3 -m http.server 8123
 ```
 
@@ -56,7 +56,7 @@ re-deploy *from your phone*.
 3. In Terminal:
 
    ```bash
-   cd ~/"Autism Ios App"
+   cd ~/AutismIosApp
    git add .
    git commit -m "Autism session tracker PWA"
    git branch -M main
@@ -100,7 +100,7 @@ is opened online — no reinstall needed.
 
 ## Other hosting options (if you prefer)
 
-- **Netlify Drop** — <https://app.netlify.com/drop>. Drag the `Autism Ios App` folder onto the page;
+- **Netlify Drop** — <https://app.netlify.com/drop>. Drag the `AutismIosApp` folder onto the page;
   you instantly get an HTTPS URL. Easiest, but updates mean re-dragging the folder.
 - **Vercel** — `npx vercel` from the project folder, follow the prompts. Free HTTPS URL, redeploys on `git push`.
 
