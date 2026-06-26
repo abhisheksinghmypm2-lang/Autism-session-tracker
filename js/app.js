@@ -80,7 +80,7 @@ function addDays(iso, n) {
 }
 
 /* ---------------- app state ---------------- */
-const state = { view: 'dashboard', programId: null, programs: [], sessions: [] };
+const state = { view: 'dashboard', programId: null, programs: [], sessions: [], resFilter: 'All' };
 
 const el = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -708,23 +708,25 @@ async function renderResources(v) {
       <p>Caregiving is hard. A few gentle resources for parents and caregivers.</p>
       <span class="host">autismspeaks.org ↗</span>
     </a>` : '';
-  let html = '';
-  for (const cat of ['OT', 'Speech', 'ABA', 'General']) {
-    const items = res.filter((r) => r.cat === cat);
-    if (!items.length) continue;
-    html += `<div class="section-title">${ic('book')}${cat}</div>`;
-    for (const r of items) {
-      let host = '';
-      try { host = new URL(r.url).hostname.replace('www.', ''); } catch {}
-      html += `
-        <a class="card res-item" href="${esc(r.url)}" target="_blank" rel="noopener">
-          <h3>${esc(r.title)}</h3>
-          <p>${esc(r.desc)}</p>
-          <span class="host">${esc(host)} ↗</span>
-        </a>`;
-    }
-  }
-  v.innerHTML = pin + html + `<button class="btn secondary" data-act="add-res" style="margin-top:8px">+ Add a resource link</button>`;
+  // Category filter chips (horizontal scroll): All + the categories present.
+  const cats = ['All', ...[...new Set(res.map((r) => r.cat))]];
+  if (!cats.includes(state.resFilter)) state.resFilter = 'All';
+  const chips = `<div class="res-filter-row">${cats.map((c) =>
+    `<button class="res-chip ${state.resFilter === c ? 'on' : ''}" data-act="res-filter" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}</div>`;
+  const shown = res.filter((r) => state.resFilter === 'All' || r.cat === state.resFilter);
+  const cards = shown.map((r) => {
+    let host = ''; try { host = new URL(r.url).hostname.replace('www.', ''); } catch {}
+    return `<a class="card res-item" href="${esc(r.url)}" target="_blank" rel="noopener">
+        <span class="tag">${esc(r.cat)}</span>
+        <h3>${esc(r.title)}</h3>
+        <p>${esc(r.desc)}</p>
+        <span class="host">${esc(host)} ↗</span>
+      </a>`;
+  }).join('');
+  v.innerHTML = `${chips}${pin}${cards}
+    <button class="btn secondary" data-act="add-res" style="margin-top:8px">+ Add a resource link</button>
+    <div class="section-title" style="margin-top:22px">⚙️ More</div>
+    <button class="btn secondary" data-act="open-settings">Settings &amp; backup</button>`;
 }
 
 /* ============================================================
@@ -1439,6 +1441,8 @@ document.addEventListener('click', async (e) => {
     case 'count-dec': return adjustCompleted(-1);
     case 'add-cta': return addCtaModal();
     case 'add-res': return addResModal();
+    case 'res-filter': state.resFilter = t.dataset.cat; return render();
+    case 'open-settings': return settingsModal();
     case 'edit-child': return childProfileModal();
     case 'therapist-notes': return therapistNotesModal();
     case 'tn-del': {

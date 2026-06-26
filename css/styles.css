@@ -165,6 +165,16 @@ button { font-family: inherit; }
 }
 .chip-select.on { background: var(--brand); color: #fff; border-color: var(--brand); }
 
+/* ---------- resources filter chips ---------- */
+.res-filter-row { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 10px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.res-filter-row::-webkit-scrollbar { display: none; }
+.res-chip {
+  flex: 0 0 auto; padding: 9px 15px; border-radius: 999px; border: 1.5px solid var(--line);
+  background: var(--bg-2); color: var(--ink); font-weight: 700; font-size: 13px; white-space: nowrap;
+  cursor: pointer; min-height: 40px;
+}
+.res-chip.on { background: var(--brand); color: #fff; border-color: var(--brand); }
+
 /* ---------- offline banner ---------- */
 .offline-banner {
   position: fixed; top: 0; left: 0; right: 0; z-index: 45;
