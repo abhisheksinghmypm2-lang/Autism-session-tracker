@@ -80,7 +80,7 @@ function addDays(iso, n) {
 }
 
 /* ---------------- app state ---------------- */
-const state = { view: 'dashboard', programId: null, programs: [], sessions: [], resFilter: 'All', sessionsTab: 'sessions', progressRange: 'month' };
+const state = { view: 'dashboard', programId: null, programs: [], sessions: [], resFilter: 'All', sessionsTab: 'sessions', progressRange: 'month', dailyDate: '', sensoryOpen: false };
 
 const el = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -320,6 +320,25 @@ function recentLowMood(wb) {
   const low = (d) => wb[d] != null && wb[d] <= 2;
   const d0 = todayISO(), d1 = addDays(d0, -1), d2 = addDays(d0, -2);
   return (low(d1) && low(d2)) || (low(d0) && low(d1));
+}
+
+/* ---------------- daily log (kv map of dateISO -> log; last 60 days) ---------------- */
+const CHILD_MOOD = ['😢', '😟', '😐', '🙂', '😄'];
+const TOGGLE_DEFS = [
+  { key: 'sleep', icon: '💤', label: 'Sleep', opts: ['Good', 'Okay', 'Poor'] },
+  { key: 'eating', icon: '🍽️', label: 'Eating', opts: ['Good', 'Picky', 'Refused'] },
+  { key: 'medication', icon: '💊', label: 'Medication', opts: ['Given', 'Skipped', 'N/A'] },
+  { key: 'homeExercise', icon: '🎯', label: 'Home exercise', opts: ['Done', 'Skipped', 'N/A'] },
+];
+const SENSORY_OPTS = ['Loud sounds', 'Bright lights', 'Crowds', 'Touch', 'Clothing', 'Food texture', 'Other'];
+const getDailyLogs = async () => (await DB.get(STORE.kv, 'dailyLogs'))?.value || {};
+const getDayLog = async (date) => (await getDailyLogs())[date] || {};
+async function setDayLog(date, patch) {
+  const all = await getDailyLogs();
+  all[date] = { ...(all[date] || {}), ...patch };
+  const keys = Object.keys(all).sort();
+  while (keys.length > 60) delete all[keys.shift()];
+  await DB.put(STORE.kv, { key: 'dailyLogs', value: all });
 }
 
 // Lightweight confetti burst (no library): a transient canvas of falling pieces.
@@ -741,29 +760,100 @@ async function renderProgram(v) {
 
 /* ---------------- Daily CTA ---------------- */
 async function renderCTA(v) {
+  const child = await getChild();
+  const name = childName(child);
+  const date = state.dailyDate || todayISO();
+  const isToday = date === todayISO();
+  const log = await getDayLog(date);
+  const logs = await getDailyLogs();
+
+  // last-7-days date strip
+  const strip = Array.from({ length: 7 }, (_, i) => {
+    const d = addDays(todayISO(), -(6 - i));
+    const dt = new Date(d + 'T00:00:00');
+    const has = logs[d] && (logs[d].childMood || logs[d].win || logs[d].concern);
+    return `<button class="day-pill ${d === date ? 'on' : ''}" data-act="daily-date" data-date="${d}">
+      <span>${dt.toLocaleDateString(undefined, { weekday: 'short' }).slice(0, 2)}</span><b>${dt.getDate()}</b>${has ? '<i class="day-dot"></i>' : ''}</button>`;
+  }).join('');
+
+  const doneN = [log.childMood, log.win, log.concern,
+    (log.sleep || log.eating || log.medication || log.homeExercise),
+    (log.sensory && log.sensory.length)].filter(Boolean).length;
+
+  const moodBtns = CHILD_MOOD.map((e, i) =>
+    `<button class="wb-emoji big ${log.childMood === i + 1 ? 'on' : ''}" data-act="child-mood" data-score="${i + 1}" data-date="${date}">${e}</button>`).join('');
+
+  const toggles = TOGGLE_DEFS.map((t) => `
+    <div class="toggle-row"><div class="toggle-label">${t.icon} ${t.label}</div>
+      <div class="seg toggle-seg">${t.opts.map((o) =>
+        `<button class="${log[t.key] === o ? 'on-brand' : ''}" data-act="daily-toggle" data-key="${t.key}" data-val="${o}" data-date="${date}">${o}</button>`).join('')}</div>
+    </div>`).join('');
+
+  const sensorySel = new Set(log.sensory || []);
+  const sensoryBlock = (state.sensoryOpen || sensorySel.size)
+    ? `<div class="chip-row" style="margin-top:8px">${SENSORY_OPTS.map((s) =>
+        `<button class="chip-select ${sensorySel.has(s) ? 'on' : ''}" data-act="daily-sensory" data-val="${esc(s)}" data-date="${date}">${s}</button>`).join('')}</div>`
+    : `<button class="btn secondary small" data-act="sensory-open" style="margin-top:8px">+ Add sensory note</button>`;
+
+  const concernPrompt = (log.concern && !log.concernHandled)
+    ? `<div class="concern-prompt">Add this to your therapist list?
+        <button class="btn secondary small" data-act="concern-yes" data-date="${date}">Yes</button>
+        <button class="btn secondary small" data-act="concern-no" data-date="${date}">No</button></div>` : '';
+
+  // existing at-home activities (kept below the daily log)
   const ctas = await getCTAs();
   const counts = await checkCountsByDate();
   const doneToday = counts[todayISO()] || 0;
-  const pct = ctas.length ? Math.round((doneToday / ctas.length) * 100) : 0;
-  let rows = '';
+  const actPct = ctas.length ? Math.round((doneToday / ctas.length) * 100) : 0;
+  let actRows = '';
   for (const c of ctas) {
-    const done = !!(await DB.get(STORE.checks, `${todayISO()}|${c.id}`));
-    rows += `
-      <div class="check-item ${done ? 'done' : ''}" data-act="toggle-cta" data-id="${c.id}">
-        <div class="check-box">${done ? '✓' : ''}</div>
-        <div class="check-text">${esc(c.text)}</div>
-        <span class="check-cat" style="background:${CAT_COLORS[c.cat] || '#888'}">${c.cat}</span>
-      </div>`;
+    const cdone = !!(await DB.get(STORE.checks, `${todayISO()}|${c.id}`));
+    actRows += `<div class="check-item ${cdone ? 'done' : ''}" data-act="toggle-cta" data-id="${c.id}">
+      <div class="check-box">${cdone ? '✓' : ''}</div><div class="check-text">${esc(c.text)}</div>
+      <span class="check-cat" style="background:${CAT_COLORS[c.cat] || '#888'}">${c.cat}</span></div>`;
   }
+
   v.innerHTML = `
+    <div class="day-strip">${strip}</div>
+    <div class="row-between" style="margin:2px 4px 12px">
+      <h2 style="margin:0">Daily moments</h2>
+      <span class="muted" style="font-size:13px">${doneN} of 5 logged ${doneN >= 5 ? '✓' : ''}</span>
+    </div>
+    ${!isToday ? `<div class="muted" style="font-size:12.5px;margin:-6px 4px 10px">Viewing ${fmtDate(date)}</div>` : ''}
+
+    <div class="card"><h2>How was ${esc(name)} today?</h2>
+      <div class="wb-row" style="margin-top:12px">${moodBtns}</div></div>
+
+    <div class="card"><h2>A moment worth remembering 🌟</h2>
+      <p class="sub" style="margin:2px 0 8px">Optional</p>
+      <textarea id="daily-win" maxlength="200" placeholder="e.g. Said thank you unprompted…">${esc(log.win || '')}</textarea></div>
+
+    <div class="card"><h2>Anything to note? 📝</h2>
+      <p class="sub" style="margin:2px 0 8px">Optional</p>
+      <textarea id="daily-concern" placeholder="e.g. Meltdown at the supermarket…">${esc(log.concern || '')}</textarea>
+      ${concernPrompt}</div>
+
+    <div class="card"><h2>Quick log</h2><div style="margin-top:8px">${toggles}</div></div>
+
+    <div class="card"><h2>Any sensory triggers today?</h2>${sensoryBlock}</div>
+
+    <div class="section-title">${ic('home')}Home activities</div>
     <div class="card stat-flex">
-      <div class="ring-wrap">${ring(pct, 'var(--green)', { size: 76, stroke: 10, center: `<div class="big" style="font-size:16px">${pct}%</div>` })}</div>
-      <div style="flex:1"><h2>${doneToday === ctas.length && ctas.length ? 'All done today 🎉' : "Today's activities"}</h2>
-        <p class="sub" style="margin:2px 0 0">${doneToday}/${ctas.length} complete · resets each day</p></div>
+      <div class="ring-wrap">${ring(actPct, 'var(--green)', { size: 64, stroke: 9, center: `<div class="big" style="font-size:14px">${actPct}%</div>` })}</div>
+      <div style="flex:1"><h2>Today's activities</h2><p class="sub" style="margin:2px 0 0">${doneToday}/${ctas.length} complete</p></div>
     </div>
     ${await aiTodayCardHtml()}
-    <div class="card">${rows}</div>
-    <button class="btn secondary" data-act="add-cta">+ Add my own activity</button>`;
+    <div class="card">${actRows}</div>
+    <button class="btn secondary" data-act="add-cta">+ Add my own activity</button>
+
+    <button class="btn daily-save" data-act="daily-save">Save today's log ✓</button>`;
+
+  const win = el('daily-win'), concern = el('daily-concern');
+  if (win) win.addEventListener('input', () => setDayLog(date, { win: win.value }));
+  if (concern) {
+    concern.addEventListener('input', () => setDayLog(date, { concern: concern.value }));
+    concern.addEventListener('blur', () => { if (concern.value && !log.concernHandled) render(); });
+  }
 }
 
 /* Today's slice of the AI-generated weekly plan, shown on the Daily tab. */
@@ -1544,6 +1634,28 @@ document.addEventListener('click', async (e) => {
     case 'new-plan': return newPlanModal(t.dataset.track || 'Institute');
     case 'go-cta': state.view = 'cta'; return render();
     case 'go-resources': state.view = 'resources'; return render();
+    case 'daily-date': state.dailyDate = t.dataset.date; state.sensoryOpen = false; return render();
+    case 'child-mood': await setDayLog(t.dataset.date, { childMood: +t.dataset.score }); return render();
+    case 'daily-toggle': {
+      const d = t.dataset.date, log = await getDayLog(d);
+      await setDayLog(d, { [t.dataset.key]: log[t.dataset.key] === t.dataset.val ? '' : t.dataset.val });
+      return render();
+    }
+    case 'sensory-open': state.sensoryOpen = true; return render();
+    case 'daily-sensory': {
+      const d = t.dataset.date, log = await getDayLog(d), set = new Set(log.sensory || []), val = t.dataset.val;
+      set.has(val) ? set.delete(val) : set.add(val);
+      await setDayLog(d, { sensory: [...set] });
+      return render();
+    }
+    case 'concern-yes': {
+      const d = t.dataset.date, log = await getDayLog(d);
+      if (log.concern) { const arr = await getTNotes(); arr.push({ id: 'tn-' + uid(), text: log.concern, dateAdded: d }); await saveTNotes(arr); }
+      await setDayLog(d, { concernHandled: true }); render(); showSnackbar('Added to therapist list');
+      return;
+    }
+    case 'concern-no': await setDayLog(t.dataset.date, { concernHandled: true }); return render();
+    case 'daily-save': showSnackbar('Saved ✓'); return;
     case 'wb-set': await setWellbeing(+t.dataset.score); return render();
     case 'open': state.view = 'program'; state.programId = t.dataset.id; return render();
     case 'back': state.view = 'sessions'; state.programId = null; return render();

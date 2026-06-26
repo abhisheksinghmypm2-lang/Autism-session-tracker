@@ -165,6 +165,31 @@ button { font-family: inherit; }
 }
 .chip-select.on { background: var(--brand); color: #fff; border-color: var(--brand); }
 
+/* ---------- daily log ---------- */
+.day-strip { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 12px; scrollbar-width: none; }
+.day-strip::-webkit-scrollbar { display: none; }
+.day-pill {
+  flex: 1 0 auto; min-width: 44px; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 8px 6px; border-radius: 14px; border: none; background: var(--bg-2); color: var(--ink-soft);
+  cursor: pointer; position: relative; font-size: 11px;
+}
+.day-pill b { font-size: 16px; font-weight: 800; color: var(--ink); }
+.day-pill.on { background: var(--brand); color: #fff; }
+.day-pill.on b { color: #fff; }
+.day-pill .day-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--amber, #f59e0b); position: absolute; bottom: 4px; }
+.wb-emoji.big { height: 60px; font-size: 30px; }
+.toggle-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.toggle-row:last-child { border-bottom: none; }
+.toggle-label { flex: 0 0 42%; font-size: 14px; font-weight: 600; }
+.toggle-seg { flex: 1; }
+.toggle-seg button { padding: 9px 4px; font-size: 12.5px; min-height: 40px; }
+.concern-prompt { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; font-size: 13.5px; font-weight: 600; }
+.concern-prompt .btn { width: auto; }
+.daily-save {
+  position: sticky; bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 12px); z-index: 5;
+  margin-top: 16px;
+}
+
 /* ---------- progress view ---------- */
 .seg-tabs { margin-bottom: 14px; }
 .prog-bignum { font-size: 40px; font-weight: 800; color: var(--brand); letter-spacing: -0.02em; line-height: 1; margin-bottom: 2px; }
