@@ -254,6 +254,17 @@ const getChild = async () => (await DB.get(STORE.kv, 'childProfile'))?.value || 
 const saveChild = (c) => DB.put(STORE.kv, { key: 'childProfile', value: c });
 const THERAPY_TYPES = ['Speech', 'OT', 'ABA', 'PT', 'Other'];
 const childName = (child) => (child && child.displayName) ? child.displayName : 'your child';
+// Short, non-identifying context for AI prompts, built from the profile.
+function childContextStr(child) {
+  if (!child) return undefined;
+  const bits = [];
+  if (child.dob) {
+    const age = Math.floor((Date.now() - new Date(child.dob + 'T00:00:00')) / (365.25 * 86400000));
+    if (age >= 0 && age < 30) bits.push(`${age} years old`);
+  }
+  if (child.therapyTypes && child.therapyTypes.length) bits.push(`in ${child.therapyTypes.join(', ')} therapy`);
+  return bits.length ? bits.join(', ') : undefined;
+}
 
 function dashHeaderHtml(child) {
   const word = (() => { const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; })();
@@ -755,6 +766,11 @@ async function renderProgress(v, seg) {
   v.innerHTML = `${seg}
     <div class="res-filter-row">${rangeBtn('month', 'This month')}${rangeBtn('3months', 'Last 3 months')}${rangeBtn('all', 'All time')}</div>
     <h2 style="margin:4px 0 14px">Look how far ${esc(name)} has come</h2>
+    <div class="card ai-cta" data-act="weekly-recap" style="cursor:pointer">
+      <h2>✨ AI recap</h2>
+      <p class="sub" style="margin:2px 0 10px">Turn ${esc(name)}'s logged moments, sessions, and milestones into a warm recap — plus a summary to share with the team.</p>
+      <button class="btn" data-act="weekly-recap">✨ Write my recap</button>
+    </div>
     <div class="card"><h2 style="margin-bottom:8px">${ic('chart')}Sessions delivered</h2>
       ${barChart(buckets)}
       <p class="sub" style="margin:8px 0 0">${sessionsInRange} attended in this period</p></div>
@@ -974,7 +990,8 @@ async function renderCTA(v) {
     <div class="card"><h2>Anything to note? 📝</h2>
       <p class="sub" style="margin:2px 0 8px">Optional</p>
       <textarea id="daily-concern" placeholder="e.g. Meltdown at the supermarket…">${esc(log.concern || '')}</textarea>
-      ${concernPrompt}</div>
+      ${concernPrompt}
+      ${log.concern ? `<button class="btn secondary small" data-act="concern-ideas" data-date="${date}" style="margin-top:8px">💡 Get gentle ideas</button>` : ''}</div>
 
     <div class="card"><h2>Quick log</h2><div style="margin-top:8px">${toggles}</div></div>
 
@@ -1285,15 +1302,105 @@ async function toggleAi(dateISO, dayIdx, stepIdx) {
   if (cur) await DB.delete(STORE.checks, key); else await DB.put(STORE.checks, { key, done: true });
 }
 
-function aiGenerateModal() {
+// Shared gate for any AI feature: returns true if cloud AI is ready, else
+// shows the appropriate "needs setup / sign in" modal and returns false.
+function aiReady() {
   if (!CLOUD_ENABLED || !cloud) {
-    openModal(`<h2>Cloud sync needed</h2><p class="modal-sub">AI generation runs securely in the cloud. It isn't configured on this build.</p><button class="btn secondary" data-act="cancel">Close</button>`);
-    return;
+    openModal(`<h2>Cloud sync needed</h2><p class="modal-sub">AI features run securely in the cloud. They aren't configured on this build.</p><button class="btn secondary" data-act="cancel">Close</button>`);
+    return false;
   }
   if (!currentUser || !cloudHealthy) {
-    openModal(`<h2>Sign in first</h2><p class="modal-sub">AI generation needs your account. Open ⚙️ Settings → Account & sync, sign in, then try again.</p><button class="btn secondary" data-act="cancel">Close</button>`);
+    openModal(`<h2>Sign in first</h2><p class="modal-sub">AI features need your account. Open ⚙️ Settings → Account & sync, sign in, then try again.</p><button class="btn secondary" data-act="cancel">Close</button>`);
+    return false;
+  }
+  return true;
+}
+
+// ---- Feature 2: gentle ideas for a logged concern ----
+async function concernIdeasModal(date) {
+  if (!aiReady()) return;
+  const log = await getDayLog(date);
+  const concern = (log.concern || '').trim();
+  if (!concern) return;
+  const child = await getChild();
+  const name = childName(child);
+  openModal(`<h2>💡 Gentle ideas</h2>
+    <p class="modal-sub">For: “${esc(concern)}”</p>
+    <div id="ci-status" class="muted" style="font-size:13px;margin:10px 0">⏳ Thinking of a few supportive ideas…</div>
+    <div class="btn-row"><button class="btn secondary" data-act="cancel">Close</button></div>`);
+  let result;
+  try {
+    result = (await cloud.callFunction('concernIdeas', {
+      childName: name, concern, childContext: childContextStr(child),
+    }))?.result;
+  } catch (e) {
+    const s = el('ci-status'); if (s) { s.style.color = 'var(--red)'; s.textContent = 'Couldn’t get ideas: ' + (e?.message || e); }
     return;
   }
+  if (!result || !Array.isArray(result.ideas)) return;
+  const ideas = result.ideas.map((i) => `
+    <div class="idea-card"><div class="idea-title">${esc(i.title || '')}</div>
+      ${i.detail ? `<div class="idea-detail">${esc(i.detail)}</div>` : ''}</div>`).join('');
+  openModal(`<h2>💡 Gentle ideas</h2>
+    <p class="modal-sub">For: “${esc(concern)}”</p>
+    ${ideas}
+    ${result.discussWithTherapist ? `<div class="idea-therapist">📋 Worth mentioning: ${esc(result.discussWithTherapist)}
+      <button class="btn secondary small" data-act="ci-to-therapist" data-text="${esc(result.discussWithTherapist)}" style="margin-top:8px">Add to therapist list</button></div>` : ''}
+    ${result.disclaimer ? `<p class="muted" style="font-size:12px;margin:10px 0 0">⚠️ ${esc(result.disclaimer)}</p>` : ''}
+    <div class="btn-row" style="margin-top:12px"><button class="btn secondary" data-act="cancel">Close</button></div>`);
+}
+
+// ---- Feature 1: AI weekly recap from logged data ----
+async function weeklyRecapModal() {
+  if (!aiReady()) return;
+  const child = await getChild();
+  const name = childName(child);
+  const start = rangeStart(state.progressRange);
+  const rangeLabel = state.progressRange === '3months' ? 'the last 3 months' : state.progressRange === 'all' ? 'all time' : 'this month';
+  // gather logged data in range
+  const dailyLogs = await getDailyLogs();
+  const logs = Object.entries(dailyLogs).filter(([d]) => d >= start)
+    .map(([d, l]) => ({ date: d, mood: typeof l.childMood === 'number' ? CHILD_MOOD[l.childMood] : undefined, win: l.win || undefined, concern: l.concern || undefined, sleep: l.sleep, eating: l.eating, sensory: (l.sensory && l.sensory.length) ? l.sensory : undefined }))
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+  const sessions = [];
+  for (const p of state.programs) {
+    const sess = await DB.byIndex(STORE.sessions, 'programId', p.id);
+    for (const s of sess) if (s.date && s.date >= start && s.status !== 'scheduled') {
+      sessions.push({ date: s.date, name: p.name, type: p.type, status: s.status, mood: typeof s.sessionMood === 'number' ? CHILD_MOOD[s.sessionMood] : undefined, reason: s.cancelReason || undefined });
+    }
+  }
+  const milestones = (await getMilestones()).filter((m) => m.date >= start).map((m) => ({ text: m.text, date: m.date, category: m.category }));
+  if (!logs.length && !sessions.length && !milestones.length) {
+    openModal(`<h2>✨ Weekly recap</h2><p class="modal-sub">There's nothing logged in this period yet. Add a few daily moments or sessions and try again.</p><button class="btn secondary" data-act="cancel">Close</button>`);
+    return;
+  }
+  openModal(`<h2>✨ AI recap</h2>
+    <div id="wr-status" class="muted" style="font-size:13px;margin:10px 0">⏳ Reading ${name}'s ${rangeLabel} and writing a recap…</div>
+    <div class="btn-row"><button class="btn secondary" data-act="cancel">Close</button></div>`);
+  let recap;
+  try {
+    recap = (await cloud.callFunction('weeklyRecap', {
+      childName: name, rangeLabel, data: { logs, sessions, milestones },
+    }))?.recap;
+  } catch (e) {
+    const s = el('wr-status'); if (s) { s.style.color = 'var(--red)'; s.textContent = 'Couldn’t write the recap: ' + (e?.message || e); }
+    return;
+  }
+  if (!recap || !recap.recap) return;
+  const highlights = (recap.highlights || []).map((h) => `<li>${esc(h)}</li>`).join('');
+  const recapHtml = esc(recap.recap).replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>');
+  const forTherapist = esc(recap.forTherapist || '').replace(/\n/g, '<br>');
+  openModal(`<h2>✨ ${esc(name)}'s recap</h2>
+    <p class="modal-sub">${esc(rangeLabel.charAt(0).toUpperCase() + rangeLabel.slice(1))}</p>
+    <div class="recap-body"><p>${recapHtml}</p></div>
+    ${highlights ? `<div class="section-title" style="margin-left:0">Highlights</div><ul class="recap-hl">${highlights}</ul>` : ''}
+    ${forTherapist ? `<details class="recap-therapist"><summary>📋 Summary to share with the team</summary><div class="recap-tbody">${forTherapist}</div></details>` : ''}
+    ${recap.disclaimer ? `<p class="muted" style="font-size:12px;margin:10px 0 0">⚠️ ${esc(recap.disclaimer)}</p>` : ''}
+    <div class="btn-row" style="margin-top:12px"><button class="btn secondary" data-act="cancel">Close</button></div>`);
+}
+
+function aiGenerateModal() {
+  if (!aiReady()) return;
   openModal(`
     <h2>Generate home plan</h2>
     <p class="modal-sub">Add your therapist's weekly plan — a photo or pasted text — and AI builds a 7-day, ~15-min daily routine with videos.</p>
@@ -1832,6 +1939,11 @@ document.addEventListener('click', async (e) => {
       return;
     }
     case 'concern-no': await setDayLog(t.dataset.date, { concernHandled: true }); return render();
+    case 'concern-ideas': return concernIdeasModal(t.dataset.date);
+    case 'ci-to-therapist': {
+      const arr = await getTNotes(); arr.push({ id: 'tn-' + uid(), text: t.dataset.text, dateAdded: todayISO() });
+      await saveTNotes(arr); showSnackbar('Added to therapist list'); return;
+    }
     case 'daily-save': showSnackbar('Saved ✓'); return;
     case 'wb-set': await setWellbeing(+t.dataset.score); return render();
     case 'open': state.view = 'program'; state.programId = t.dataset.id; return render();
@@ -1846,6 +1958,7 @@ document.addEventListener('click', async (e) => {
     case 'sess-tab': state.sessionsTab = t.dataset.tab; return render();
     case 'prog-range': state.progressRange = t.dataset.range; return render();
     case 'export-report': return exportReport();
+    case 'weekly-recap': return weeklyRecapModal();
     case 'edit-child': return childProfileModal();
     case 'therapist-notes': return therapistNotesModal();
     case 'tn-del': {

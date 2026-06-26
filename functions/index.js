@@ -145,3 +145,113 @@ exports.generateHomePlan = onCall(
     return { plan, model: resp.model, usage: resp.usage };
   }
 );
+
+// ---- shared: one plain Claude JSON call (no tools), returns parsed object ----
+async function claudeJson(instruction, { maxTokens = 2500 } = {}) {
+  const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY.value() });
+  let resp;
+  try {
+    resp = await client.messages.create({
+      model: 'claude-opus-4-8',
+      max_tokens: maxTokens,
+      thinking: { type: 'adaptive' },
+      messages: [{ role: 'user', content: [{ type: 'text', text: instruction }] }],
+    });
+  } catch (e) {
+    logger.error('Anthropic request failed', e);
+    throw new HttpsError('internal', 'The AI request failed: ' + (e?.message || e));
+  }
+  if (resp.stop_reason === 'refusal') {
+    throw new HttpsError('failed-precondition', 'The request was declined by the safety system.');
+  }
+  const text = (resp.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+  const obj = extractJson(text);
+  if (!obj) {
+    logger.error('Unparseable AI output', text.slice(0, 500));
+    throw new HttpsError('internal', 'The AI did not return a usable result. Please try again.');
+  }
+  return { obj, model: resp.model, usage: resp.usage };
+}
+
+const TONE_RULES = `TONE & SAFETY (must follow):
+- Warm, encouraging, plain language a tired parent can read at a glance.
+- NEVER use clinical, diagnostic, or medical language. Never diagnose or assess.
+- NEVER shame the parent or imply they should be doing more.
+- These are supportive observations/ideas to review WITH their therapist — not advice.
+- Refer to the child by name only. Note correlations gently, never as cause or fact.`;
+
+// ============================================================
+// weeklyRecap — turn a week of logs/sessions/milestones into a
+// warm parent recap + a concise summary to share with the team.
+// ============================================================
+exports.weeklyRecap = onCall(
+  { secrets: [ANTHROPIC_API_KEY], timeoutSeconds: 120, memory: '512MiB' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Please sign in first.');
+    const { childName, rangeLabel, data } = request.data || {};
+    const name = (childName || 'your child').toString().slice(0, 60);
+    if (!data || typeof data !== 'object') {
+      throw new HttpsError('invalid-argument', 'No week data was provided.');
+    }
+    const instruction = `You are helping a parent reflect on their autistic child's week using the data they logged.
+
+CHILD: ${name}
+PERIOD: ${rangeLabel || 'the past week'}
+
+THE DATA (JSON — daily logs, therapy sessions, and milestones the parent recorded):
+${JSON.stringify(data).slice(0, 12000)}
+
+${TONE_RULES}
+
+YOUR TASK
+1. Write a short, warm recap for the parent (2–4 short paragraphs) highlighting what went well, gentle patterns worth noticing, and genuine encouragement. Reference specific logged moments (wins, moods, sessions) by name where possible.
+2. Pull out 3–5 bullet "highlights" — the most notable moments or patterns.
+3. Write a concise, neutral summary the parent can share with their therapy team: dates/attendance, observed moods, sleep/eating/sensory notes, concerns, and milestones. Factual and organized, still non-clinical.
+
+OUTPUT — return ONLY a JSON object (no prose, no markdown fences):
+{
+  "recap": "the warm parent-facing recap (use \\n\\n between paragraphs)",
+  "highlights": ["short highlight", "..."],
+  "forTherapist": "the concise shareable summary (use \\n between lines)",
+  "disclaimer": "one short reminder to review with the therapist"
+}`;
+    const { obj, model, usage } = await claudeJson(instruction, { maxTokens: 3000 });
+    if (!obj.recap) throw new HttpsError('internal', 'The AI did not return a usable recap. Please try again.');
+    return { recap: obj, model, usage };
+  }
+);
+
+// ============================================================
+// concernIdeas — gentle, non-clinical ideas for a logged concern.
+// ============================================================
+exports.concernIdeas = onCall(
+  { secrets: [ANTHROPIC_API_KEY], timeoutSeconds: 120, memory: '512MiB' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Please sign in first.');
+    const { childName, concern, childContext } = request.data || {};
+    const name = (childName || 'your child').toString().slice(0, 60);
+    const text = (concern || '').toString().trim().slice(0, 1500);
+    if (!text) throw new HttpsError('invalid-argument', 'Please provide the concern.');
+    const instruction = `A parent of an autistic child logged this concern about their day:
+
+CHILD: ${name}
+${childContext ? `ABOUT ${name}: ${childContext}\n` : ''}CONCERN: "${text}"
+
+${TONE_RULES}
+
+YOUR TASK
+Offer 2–4 gentle, practical ideas the parent could try at home for this kind of situation, plus a short note on what's worth raising with their therapist. Keep each idea concrete and doable. Do not diagnose or explain "why" clinically.
+
+OUTPUT — return ONLY a JSON object (no prose, no markdown fences):
+{
+  "ideas": [ { "title": "short idea title", "detail": "1–2 sentence how-to" } ],
+  "discussWithTherapist": "one short, specific thing to mention to the therapist",
+  "disclaimer": "one short reminder that these are supportive ideas, not medical advice"
+}`;
+    const { obj, model, usage } = await claudeJson(instruction, { maxTokens: 1800 });
+    if (!Array.isArray(obj.ideas) || !obj.ideas.length) {
+      throw new HttpsError('internal', 'The AI did not return usable ideas. Please try again.');
+    }
+    return { result: obj, model, usage };
+  }
+);
