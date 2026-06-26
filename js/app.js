@@ -572,15 +572,20 @@ async function renderPlans(v) {
 }
 
 /* ---------------- Progress view (inside the Sessions tab) ---------------- */
+// Show at most ~7 x-axis labels so they don't overlap; always keep the last.
+function labelStep(n) { return Math.max(1, Math.ceil(n / 7)); }
+
 function barChart(data, { w = 320, h = 130 } = {}) {
   const pad = 18, base = h - 18, max = Math.max(1, ...data.map((d) => d.value));
   const bw = (w - pad * 2) / data.length;
+  const step = labelStep(data.length);
   const bars = data.map((d, i) => {
     const bh = (d.value / max) * (base - 16);
     const x = pad + i * bw + bw * 0.18, y = base - bh;
+    const showLabel = (data.length - 1 - i) % step === 0; // keep last, then every step back
     return `<rect x="${x}" y="${y}" width="${bw * 0.64}" height="${Math.max(2, bh)}" rx="4" fill="var(--brand)"></rect>
       ${d.value ? `<text x="${x + bw * 0.32}" y="${y - 4}" font-size="9" text-anchor="middle" fill="var(--muted)">${d.value}</text>` : ''}
-      <text x="${x + bw * 0.32}" y="${h - 4}" font-size="8.5" text-anchor="middle" fill="var(--muted)">${esc(d.label)}</text>`;
+      ${showLabel ? `<text x="${x + bw * 0.32}" y="${h - 4}" font-size="8.5" text-anchor="middle" fill="var(--muted)">${esc(d.label)}</text>` : ''}`;
   }).join('');
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="xMidYMid meet">${bars}</svg>`;
 }
@@ -609,7 +614,10 @@ function moodLineChart(data, { w = 320, h = 150 } = {}) {
   }
   const line = path ? `<path d="${path}" fill="none" stroke="var(--brand)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>` : '';
   const dots = pts.filter(Boolean).map((p) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3.5" fill="var(--brand)"/>`).join('');
-  const xlabels = data.map((d, i) => `<text x="${x(i).toFixed(1)}" y="${h - 5}" font-size="8.5" text-anchor="middle" fill="var(--muted)">${esc(d.label)}</text>`).join('');
+  const step = labelStep(n);
+  const xlabels = data.map((d, i) => ((n - 1 - i) % step === 0
+    ? `<text x="${x(i).toFixed(1)}" y="${h - 5}" font-size="8.5" text-anchor="middle" fill="var(--muted)">${esc(d.label)}</text>`
+    : '')).join('');
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="xMidYMid meet">${grid}${line}${dots}${xlabels}</svg>`;
 }
 
