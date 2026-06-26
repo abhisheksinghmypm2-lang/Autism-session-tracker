@@ -694,12 +694,16 @@ async function exportReport() {
   const name = childName(child);
   const start = rangeStart(state.progressRange);
   const rangeLabel = state.progressRange === '3months' ? 'Last 3 months' : state.progressRange === 'all' ? 'All time' : 'This month';
-  const rows = [];
+  const rows = [], missed = [];
   for (const p of state.programs) {
     const sess = await DB.byIndex(STORE.sessions, 'programId', p.id);
-    for (const s of sess) if (s.status === 'attended' && s.date && s.date >= start) rows.push({ date: s.date, name: p.name, type: p.type });
+    for (const s of sess) {
+      if (s.status === 'attended' && s.date && s.date >= start) rows.push({ date: s.date, name: p.name, type: p.type, mood: s.sessionMood });
+      else if (s.status === 'missed' && s.date && s.date >= start) missed.push({ date: s.date, name: p.name, type: p.type, reason: s.cancelReason });
+    }
   }
   rows.sort((a, b) => (a.date < b.date ? 1 : -1));
+  missed.sort((a, b) => (a.date < b.date ? 1 : -1));
   const milestones = (await getMilestones()).filter((m) => m.date >= start).sort((a, b) => (a.date < b.date ? 1 : -1));
   const tnotes = await getTNotes();
   // mood summary over the range
@@ -720,7 +724,9 @@ async function exportReport() {
     <h1>${esc(name)} — Progress report</h1>
     <p class="meta">${rangeLabel} · generated ${fmtDate(todayISO())} · Autism Central</p>
     <h2>Sessions attended (${rows.length})</h2>
-    <ul>${rows.map((r) => li(`${fmtDate(r.date)} — ${esc(r.name)} <span class="cat">${esc(r.type)}</span>`)).join('') || li('None in this period')}</ul>
+    <ul>${rows.map((r) => li(`${fmtDate(r.date)} — ${esc(r.name)} <span class="cat">${esc(r.type)}</span>${typeof r.mood === 'number' ? ` ${CHILD_MOOD[r.mood]}` : ''}`)).join('') || li('None in this period')}</ul>
+    ${missed.length ? `<h2>Sessions missed (${missed.length})</h2>
+    <ul>${missed.map((r) => li(`${fmtDate(r.date)} — ${esc(r.name)} <span class="cat">${esc(r.type)}</span>${r.reason ? ` — ${esc(r.reason)}` : ''}`)).join('')}</ul>` : ''}
     <h2>Milestones (${milestones.length})</h2>
     <ul>${milestones.map((m) => li(`<strong>${esc(m.text)}</strong> — ${fmtDate(m.date)} <span class="cat">${esc(m.category || 'Other')}</span>`)).join('') || li('None in this period')}</ul>
     ${moodSummary}
@@ -754,7 +760,8 @@ async function renderProgram(v) {
         <div class="tl-node">${s.status === 'attended' ? '✓' : s.status === 'missed' ? '✕' : s.number}</div>
         <div class="tl-card" data-act="session" data-id="${s.id}">
           <div class="tl-top"><span class="tl-num">Session ${s.number}</span>${pill}</div>
-          ${s.date ? `<div class="tl-date">${fmtDate(s.date)}</div>` : (s.preTracked ? '<div class="tl-date">Completed before tracking</div>' : '<div class="tl-date">Tap to set date & status</div>')}
+          ${s.date ? `<div class="tl-date">${fmtDate(s.date)}${typeof s.sessionMood === 'number' ? ` · ${CHILD_MOOD[s.sessionMood]}` : ''}</div>` : (s.preTracked ? '<div class="tl-date">Completed before tracking</div>' : '<div class="tl-date">Tap to set date & status</div>')}
+          ${s.status === 'missed' && s.cancelReason ? `<div class="tl-notes">Reason: ${esc(s.cancelReason)}</div>` : ''}
           ${s.notes ? `<div class="tl-notes">${esc(s.notes)}</div>` : ''}
           ${s.documents?.length ? `<div class="tl-docs">📎 ${s.documents.length} document${s.documents.length === 1 ? '' : 's'}</div>` : ''}
         </div>
@@ -1086,6 +1093,11 @@ async function sessionModal(id) {
       </div>
     </label>
     <label class="field"><span>Date</span><input id="s-date" type="date" value="${s.date || ''}" /></label>
+    <div class="field" id="mood-field"><span>How did it go?</span>
+      <div class="wb-row" id="s-mood">${CHILD_MOOD.map((e, i) => `<button type="button" class="wb-emoji${s.sessionMood === i ? ' on' : ''}" data-mood="${i}">${e}</button>`).join('')}</div>
+    </div>
+    <label class="field" id="reason-field"><span>Reason for missing <span class="muted">(optional)</span></span>
+      <input id="s-reason" placeholder="e.g. unwell, travel, clashed with school" value="${esc(s.cancelReason || '')}" /></label>
     <label class="field"><span>Notes</span>
       <textarea id="s-notes" placeholder="What was worked on, progress, homework…">${esc(s.notes)}</textarea></label>
     <div class="section-title" style="margin-left:0">Documents</div>
@@ -1100,12 +1112,25 @@ async function sessionModal(id) {
     </div>`);
 
   let status = s.status;
+  let sessionMood = typeof s.sessionMood === 'number' ? s.sessionMood : null;
+  const syncFields = () => {
+    el('mood-field').style.display = status === 'attended' ? '' : 'none';
+    el('reason-field').style.display = status === 'missed' ? '' : 'none';
+  };
+  syncFields();
   el('status-seg').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-status]'); if (!b) return;
     status = (status === b.dataset.status) ? 'scheduled' : b.dataset.status;
     el('status-seg').querySelectorAll('button').forEach((x) => x.className = '');
     if (status === 'attended') b.className = 'on-green';
     if (status === 'missed') b.className = 'on-red';
+    syncFields();
+  });
+  el('s-mood').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-mood]'); if (!b) return;
+    const m = +b.dataset.mood;
+    sessionMood = (sessionMood === m) ? null : m;
+    el('s-mood').querySelectorAll('button').forEach((x) => x.classList.toggle('on', +x.dataset.mood === sessionMood));
   });
   el('doc-input').addEventListener('change', async (e) => {
     for (const file of e.target.files) {
@@ -1122,6 +1147,9 @@ async function sessionModal(id) {
   });
   el('save-session').addEventListener('click', async () => {
     s.status = status; s.date = el('s-date').value; s.notes = el('s-notes').value;
+    if (status === 'attended' && sessionMood != null) s.sessionMood = sessionMood; else delete s.sessionMood;
+    const reason = el('s-reason').value.trim();
+    if (status === 'missed' && reason) s.cancelReason = reason; else delete s.cancelReason;
     if (status !== 'scheduled' && !s.date) s.date = todayISO();
     await DB.put(STORE.sessions, s); closeModal(); render();
   });
