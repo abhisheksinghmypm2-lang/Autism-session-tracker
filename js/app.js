@@ -80,7 +80,7 @@ function addDays(iso, n) {
 }
 
 /* ---------------- app state ---------------- */
-const state = { view: 'dashboard', programId: null, programs: [], sessions: [], resFilter: 'All' };
+const state = { view: 'dashboard', programId: null, programs: [], sessions: [], resFilter: 'All', sessionsTab: 'sessions', progressRange: 'month' };
 
 const el = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -508,12 +508,17 @@ async function renderDashboard(v) {
 /* ---------------- Plans list (grouped by track) ---------------- */
 async function renderPlans(v) {
   await loadPrograms();
+  const seg = `<div class="seg seg-tabs">
+    <button class="${state.sessionsTab !== 'progress' ? 'on-brand' : ''}" data-act="sess-tab" data-tab="sessions">Sessions</button>
+    <button class="${state.sessionsTab === 'progress' ? 'on-brand' : ''}" data-act="sess-tab" data-tab="progress">Progress</button>
+  </div>`;
+  if (state.sessionsTab === 'progress') return renderProgress(v, seg);
   const tnotes = await getTNotes();
   const tnBanner = tnotes.length
     ? `<div class="tn-banner" data-act="therapist-notes" role="button">📋 You have ${tnotes.length} thing${tnotes.length === 1 ? '' : 's'} to tell the therapist<span class="chev">›</span></div>`
     : `<button class="btn secondary small" data-act="therapist-notes" style="margin:0 0 14px">📋 Notes for the therapist</button>`;
   if (!state.programs.length) {
-    v.innerHTML = `${tnBanner}
+    v.innerHTML = `${seg}${tnBanner}
       <div class="empty"><div class="big">🧩</div>
       <p>No therapy plans yet.<br>Tap + to add OT, Speech, or ABA.</p>
       <button class="btn" data-act="new-plan" style="max-width:240px;margin:0 auto">New plan</button></div>`;
@@ -544,7 +549,113 @@ async function renderPlans(v) {
         </div>`;
     }
   }
-  v.innerHTML = tnBanner + html;
+  v.innerHTML = seg + tnBanner + html;
+}
+
+/* ---------------- Progress view (inside the Sessions tab) ---------------- */
+function barChart(data, { w = 320, h = 130 } = {}) {
+  const pad = 18, base = h - 18, max = Math.max(1, ...data.map((d) => d.value));
+  const bw = (w - pad * 2) / data.length;
+  const bars = data.map((d, i) => {
+    const bh = (d.value / max) * (base - 16);
+    const x = pad + i * bw + bw * 0.18, y = base - bh;
+    return `<rect x="${x}" y="${y}" width="${bw * 0.64}" height="${Math.max(2, bh)}" rx="4" fill="var(--brand)"></rect>
+      ${d.value ? `<text x="${x + bw * 0.32}" y="${y - 4}" font-size="9" text-anchor="middle" fill="var(--muted)">${d.value}</text>` : ''}
+      <text x="${x + bw * 0.32}" y="${h - 4}" font-size="8.5" text-anchor="middle" fill="var(--muted)">${esc(d.label)}</text>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="xMidYMid meet">${bars}</svg>`;
+}
+
+function rangeStart(range) {
+  if (range === 'all') return '1970-01-01';
+  return addDays(todayISO(), range === '3months' ? -90 : -30);
+}
+
+async function renderProgress(v, seg) {
+  const child = await getChild();
+  const name = childName(child);
+  // gather attended sessions (with dates) across all programs
+  const attended = [];
+  for (const p of state.programs) {
+    const sess = await DB.byIndex(STORE.sessions, 'programId', p.id);
+    for (const s of sess) if (s.status === 'attended' && s.date) attended.push(s.date);
+  }
+  const start = rangeStart(state.progressRange);
+  const weeks = state.progressRange === '3months' ? 13 : state.progressRange === 'all' ? 12 : 5;
+  const buckets = [];
+  for (let i = weeks - 1; i >= 0; i--) {
+    const wStart = addDays(todayISO(), -(i + 1) * 7 + 1), wEnd = addDays(todayISO(), -i * 7);
+    const value = attended.filter((d) => d >= wStart && d <= wEnd).length;
+    const label = new Date(wEnd + 'T00:00:00').toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
+    buckets.push({ label, value });
+  }
+  const sessionsInRange = attended.filter((d) => d >= start).length;
+
+  // wins (milestones) in range + delta vs previous equal period
+  const milestones = await getMilestones();
+  const inRange = milestones.filter((m) => m.date >= start);
+  let deltaTxt = '';
+  if (state.progressRange !== 'all') {
+    const span = state.progressRange === '3months' ? 90 : 30;
+    const prevStart = addDays(todayISO(), -span * 2), prevEnd = addDays(todayISO(), -span);
+    const prev = milestones.filter((m) => m.date >= prevStart && m.date < prevEnd).length;
+    if (prev > 0) { const pct = Math.round(((inRange.length - prev) / prev) * 100); deltaTxt = ` — ${pct >= 0 ? '+' : ''}${pct}% vs last period ${pct >= 0 ? '🎉' : ''}`; }
+  }
+
+  const timeline = inRange.slice().sort((a, b) => (b.date < a.date ? -1 : 1)).map((m) => `
+    <div class="tl2-item"><span class="tl2-dot" style="background:${MILESTONE_CATS[m.category] || MILESTONE_CATS.Other}"></span>
+      <div><div class="tl2-text">${esc(m.text)}</div><div class="tl2-date">${fmtDate(m.date)} · ${esc(m.category || 'Other')}</div></div></div>`).join('')
+    || `<p class="muted center" style="padding:12px">No milestones in this period yet.</p>`;
+
+  const rangeBtn = (key, label) => `<button class="res-chip ${state.progressRange === key ? 'on' : ''}" data-act="prog-range" data-range="${key}">${label}</button>`;
+
+  v.innerHTML = `${seg}
+    <div class="res-filter-row">${rangeBtn('month', 'This month')}${rangeBtn('3months', 'Last 3 months')}${rangeBtn('all', 'All time')}</div>
+    <h2 style="margin:4px 0 14px">Look how far ${esc(name)} has come</h2>
+    <div class="card"><h2 style="margin-bottom:8px">${ic('chart')}Sessions delivered</h2>
+      ${barChart(buckets)}
+      <p class="sub" style="margin:8px 0 0">${sessionsInRange} attended in this period</p></div>
+    <div class="card"><div class="prog-bignum">${inRange.length}</div>
+      <div style="font-weight:700">wins logged${deltaTxt}</div></div>
+    <div class="card"><h2 style="margin-bottom:10px">🌟 Milestone timeline</h2>${timeline}</div>
+    <button class="btn" data-act="export-report">⬇︎ Export report (PDF)</button>`;
+}
+
+async function exportReport() {
+  const child = await getChild();
+  const name = childName(child);
+  const start = rangeStart(state.progressRange);
+  const rangeLabel = state.progressRange === '3months' ? 'Last 3 months' : state.progressRange === 'all' ? 'All time' : 'This month';
+  const rows = [];
+  for (const p of state.programs) {
+    const sess = await DB.byIndex(STORE.sessions, 'programId', p.id);
+    for (const s of sess) if (s.status === 'attended' && s.date && s.date >= start) rows.push({ date: s.date, name: p.name, type: p.type });
+  }
+  rows.sort((a, b) => (a.date < b.date ? 1 : -1));
+  const milestones = (await getMilestones()).filter((m) => m.date >= start).sort((a, b) => (a.date < b.date ? 1 : -1));
+  const tnotes = await getTNotes();
+  const li = (s) => `<li>${s}</li>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(name)} — Report</title>
+    <style>body{font-family:-apple-system,Arial,sans-serif;color:#1e293b;padding:28px;max-width:720px;margin:auto;line-height:1.5}
+    h1{color:#0f766e;margin-bottom:4px} h2{color:#0f766e;border-bottom:2px solid #e2e8f0;padding-bottom:4px;margin-top:28px}
+    .meta{color:#64748b;margin-top:0} li{margin:5px 0}
+    .cat{display:inline-block;background:#0f766e;color:#fff;border-radius:999px;padding:1px 8px;font-size:11px;margin-left:4px}
+    button{margin-top:26px;padding:12px 20px;background:#0f766e;color:#fff;border:none;border-radius:10px;font-size:15px;cursor:pointer}
+    @media print{button{display:none}}</style></head><body>
+    <h1>${esc(name)} — Progress report</h1>
+    <p class="meta">${rangeLabel} · generated ${fmtDate(todayISO())} · Autism Central</p>
+    <h2>Sessions attended (${rows.length})</h2>
+    <ul>${rows.map((r) => li(`${fmtDate(r.date)} — ${esc(r.name)} <span class="cat">${esc(r.type)}</span>`)).join('') || li('None in this period')}</ul>
+    <h2>Milestones (${milestones.length})</h2>
+    <ul>${milestones.map((m) => li(`<strong>${esc(m.text)}</strong> — ${fmtDate(m.date)} <span class="cat">${esc(m.category || 'Other')}</span>`)).join('') || li('None in this period')}</ul>
+    <h2>Notes for the therapist (${tnotes.length})</h2>
+    <ul>${tnotes.map((n) => li(`${esc(n.text)} <span class="meta">(${fmtDate(n.dateAdded)})</span>`)).join('') || li('None')}</ul>
+    <button onclick="window.print()">Save as PDF / Print</button>
+    <script>setTimeout(function(){window.print();},500);<\/script>
+    </body></html>`;
+  const w = window.open('', '_blank');
+  if (!w) { alert('Please allow pop-ups to export the report, then try again.'); return; }
+  w.document.write(html); w.document.close();
 }
 
 /* ---------------- Single program (timeline + per-plan chart) ---------------- */
@@ -1443,6 +1554,9 @@ document.addEventListener('click', async (e) => {
     case 'add-res': return addResModal();
     case 'res-filter': state.resFilter = t.dataset.cat; return render();
     case 'open-settings': return settingsModal();
+    case 'sess-tab': state.sessionsTab = t.dataset.tab; return render();
+    case 'prog-range': state.progressRange = t.dataset.range; return render();
+    case 'export-report': return exportReport();
     case 'edit-child': return childProfileModal();
     case 'therapist-notes': return therapistNotesModal();
     case 'tn-del': {
