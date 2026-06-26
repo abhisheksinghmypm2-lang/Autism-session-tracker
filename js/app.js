@@ -287,6 +287,24 @@ const getMilestones = async () => (await DB.get(STORE.kv, 'milestones'))?.value 
 const saveMilestones = (arr) => DB.put(STORE.kv, { key: 'milestones', value: arr });
 const MILESTONE_CATS = { Communication: '#2563eb', Social: '#7c3aed', Independence: '#0f766e', Emotional: '#f59e0b', Physical: '#ea580c', Other: '#9b958a' };
 
+/* ---------------- "Things to tell the therapist" (kv) ---------------- */
+const getTNotes = async () => (await DB.get(STORE.kv, 'therapistNotes'))?.value || [];
+const saveTNotes = (arr) => DB.put(STORE.kv, { key: 'therapistNotes', value: arr });
+
+// Bottom snackbar with an optional action (used for undo on destructive actions).
+let _snackTimer = null;
+function showSnackbar(msg, actionLabel, onAction, ms = 4500) {
+  document.getElementById('snackbar')?.remove();
+  const s = document.createElement('div');
+  s.id = 'snackbar'; s.className = 'snackbar';
+  s.innerHTML = `<span>${esc(msg)}</span>${actionLabel ? `<button class="snack-btn">${esc(actionLabel)}</button>` : ''}`;
+  document.body.appendChild(s);
+  requestAnimationFrame(() => s.classList.add('show'));
+  const close = () => { s.classList.remove('show'); setTimeout(() => s.remove(), 250); };
+  if (actionLabel) s.querySelector('.snack-btn').addEventListener('click', () => { clearTimeout(_snackTimer); onAction && onAction(); close(); });
+  clearTimeout(_snackTimer); _snackTimer = setTimeout(close, ms);
+}
+
 // Lightweight confetti burst (no library): a transient canvas of falling pieces.
 function confettiBurst() {
   const c = document.createElement('canvas');
@@ -459,8 +477,13 @@ async function renderDashboard(v) {
 /* ---------------- Plans list (grouped by track) ---------------- */
 async function renderPlans(v) {
   await loadPrograms();
+  const tnotes = await getTNotes();
+  const tnBanner = tnotes.length
+    ? `<div class="tn-banner" data-act="therapist-notes" role="button">📋 You have ${tnotes.length} thing${tnotes.length === 1 ? '' : 's'} to tell the therapist<span class="chev">›</span></div>`
+    : `<button class="btn secondary small" data-act="therapist-notes" style="margin:0 0 14px">📋 Notes for the therapist</button>`;
   if (!state.programs.length) {
-    v.innerHTML = `<div class="empty"><div class="big">🧩</div>
+    v.innerHTML = `${tnBanner}
+      <div class="empty"><div class="big">🧩</div>
       <p>No therapy plans yet.<br>Tap + to add OT, Speech, or ABA.</p>
       <button class="btn" data-act="new-plan" style="max-width:240px;margin:0 auto">New plan</button></div>`;
     return;
@@ -490,7 +513,7 @@ async function renderPlans(v) {
         </div>`;
     }
   }
-  v.innerHTML = html;
+  v.innerHTML = tnBanner + html;
 }
 
 /* ---------------- Single program (timeline + per-plan chart) ---------------- */
@@ -1000,6 +1023,35 @@ async function importData(file) {
   closeModal(); alert('Backup restored.'); state.view = 'dashboard'; render();
 }
 
+/* ---------------- Things to tell the therapist ---------------- */
+async function therapistNotesModal() {
+  const child = await getChild();
+  const notes = await getTNotes();
+  const rows = notes.length
+    ? notes.map((n) => `
+      <div class="tn-item">
+        <div class="tn-text">${esc(n.text)}<div class="tn-date">${fmtDate(n.dateAdded)}</div></div>
+        <button class="tn-del" data-act="tn-del" data-id="${n.id}" aria-label="Remove">✕</button>
+      </div>`).join('')
+    : `<div class="empty" style="padding:28px 12px"><div class="big">📝</div>
+        <p>Nothing to tell the therapist yet.<br>Concerns from your daily log will appear here.</p></div>`;
+  openModal(`<h2>📋 For the therapist</h2>
+    <p class="modal-sub">A running list to bring to ${esc(childName(child))}'s next session</p>
+    <div id="tn-list">${rows}</div>
+    <div class="tn-add-row">
+      <input id="tn-input" placeholder="Add something to mention…" autocomplete="off">
+      <button class="btn" id="tn-add">Add</button>
+    </div>
+    <button class="btn secondary" data-act="cancel" style="margin-top:12px">Close</button>`);
+  const add = async () => {
+    const text = el('tn-input').value.trim(); if (!text) return;
+    const arr = await getTNotes(); arr.push({ id: 'tn-' + uid(), text, dateAdded: todayISO() });
+    await saveTNotes(arr); therapistNotesModal();
+  };
+  el('tn-add').addEventListener('click', add);
+  el('tn-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
+}
+
 /* ---------------- Milestone wall ---------------- */
 function milestoneCardHtml(m) {
   const color = MILESTONE_CATS[m.category] || MILESTONE_CATS.Other;
@@ -1347,6 +1399,19 @@ document.addEventListener('click', async (e) => {
     case 'add-cta': return addCtaModal();
     case 'add-res': return addResModal();
     case 'edit-child': return childProfileModal();
+    case 'therapist-notes': return therapistNotesModal();
+    case 'tn-del': {
+      const id = t.dataset.id;
+      const arr = await getTNotes();
+      const idx = arr.findIndex((n) => n.id === id);
+      if (idx < 0) return;
+      const [removed] = arr.splice(idx, 1);
+      await saveTNotes(arr); therapistNotesModal();
+      showSnackbar('Removed', 'Undo', async () => {
+        const a2 = await getTNotes(); a2.splice(idx, 0, removed); await saveTNotes(a2); therapistNotesModal();
+      });
+      return;
+    }
     case 'milestones': return milestonesModal();
     case 'add-milestone': return addMilestoneModal();
     case 'share-milestone': return shareMilestone(t.dataset.id);
