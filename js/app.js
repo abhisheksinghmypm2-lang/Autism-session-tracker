@@ -37,7 +37,21 @@ const ICONS = {
   book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.6C10.4 5.1 7.4 4.6 4 5.2v13c3.4-.6 6.4-.1 8 1.4 1.6-1.5 4.6-2 8-1.4v-13c-3.4-.6-6.4-.1-8 1.4Z"/><path d="M12 6.6v13.4"/></svg>',
   activity: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>',
   flame: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c1 3-1 5-2 6.5C8.5 11.7 8 13 8 14.5a4 4 0 0 0 8 0c0-1.7-1-3.2-2-4.5 2 1 3 3 3 5a5 5 0 0 1-10 0C7 11 9 7 12 3Z"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.4 12.2 2.6 2.6 4.6-5.2"/></svg>',
+  cross: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 1.8"/></svg>',
 };
+
+// Contemporary color-coded stat chips for attended / missed / remaining.
+function statChips(st) {
+  const chip = (cls, icon, n, label) =>
+    `<span class="chip ${cls}" title="${n} ${label}">${ic(icon)}<b>${n}</b></span>`;
+  return `<div class="stat-chips">
+    ${chip('chip-attended', 'check', st.attended, 'attended')}
+    ${chip('chip-missed', 'cross', st.missed, 'missed')}
+    ${chip('chip-remaining', 'clock', st.remaining, 'remaining')}
+  </div>`;
+}
 const ic = (name) => `<span class="ic">${ICONS[name] || ''}</span>`;
 
 /* ---------------- date helpers (all local-time, no UTC round-trips) ---------------- */
@@ -356,7 +370,7 @@ async function renderPlans(v) {
             <span class="tag">${p.type}</span>
             <h2>${esc(p.name)}</h2>
             <div class="meta">started ${fmtDate(p.cycleStart)}</div>
-            <div class="counts"><span>✅ ${st.attended}</span><span>❌ ${st.missed}</span><span>⏳ ${st.remaining}</span></div>
+            ${statChips(st)}
           </div>
           <div class="chev">›</div>
         </div>`;
@@ -419,11 +433,7 @@ async function renderProgram(v) {
       ${st.missed ? `<span style="flex:${st.missed};background:var(--red)"></span>` : ''}
       ${st.remaining ? `<span style="flex:${st.remaining};background:color-mix(in srgb,var(--muted) 22%,transparent)"></span>` : ''}
     </div>
-    <div class="legend">
-      <span><i style="background:var(--green)"></i>${st.attended} attended (${Math.round(st.attended / total * 100)}%)</span>
-      <span><i style="background:var(--red)"></i>${st.missed} missed</span>
-      <span><i style="background:color-mix(in srgb,var(--muted) 35%,transparent)"></i>${st.remaining} upcoming</span>
-    </div>`;
+    ${statChips(st)}`;
 
   v.innerHTML = `
     <button class="btn secondary small" data-act="back" style="margin:4px 0 14px">‹ All plans</button>
