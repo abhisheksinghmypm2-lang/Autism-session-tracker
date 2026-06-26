@@ -363,3 +363,82 @@ textarea { min-height: 84px; resize: vertical; }
 .modal .modal-sub { color: var(--muted); font-size: 13px; margin: 0 0 18px; }
 .modal-handle { width: 40px; height: 5px; border-radius: 999px; background: var(--line); margin: 0 auto 16px; }
 @media (min-width: 600px) { .modal-overlay { align-items: center; } .modal { border-radius: 24px; } }
+
+/* ============================================================
+   Contemporary filled buttons (vibrant fill + soft glow)
+   ============================================================ */
+.btn {
+  border-radius: 16px;
+  background-color: var(--brand);
+  background-image: linear-gradient(135deg,
+    color-mix(in srgb, var(--brand) 78%, #fff),
+    var(--brand) 58%,
+    color-mix(in srgb, var(--brand) 80%, #000));
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--brand) 38%, transparent),
+              inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  letter-spacing: 0.01em;
+  transition: transform 0.12s, box-shadow 0.2s, filter 0.2s;
+}
+.btn:hover { filter: brightness(1.05); }
+.btn:active {
+  transform: translateY(1px) scale(0.985);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--brand) 30%, transparent);
+}
+.btn.secondary {
+  background-image: none;
+  background-color: color-mix(in srgb, var(--brand) 12%, var(--card));
+  color: var(--brand);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--brand) 30%, transparent);
+}
+.btn.danger {
+  background-color: var(--red);
+  background-image: linear-gradient(135deg,
+    color-mix(in srgb, var(--red) 80%, #fff),
+    var(--red) 58%,
+    color-mix(in srgb, var(--red) 80%, #000));
+  color: #fff;
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--red) 35%, transparent),
+              inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+/* ============================================================
+   Bokeh background — activity (Daily) page only
+   ============================================================ */
+#view { position: relative; z-index: 1; }
+.bokeh {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
+  opacity: 0; transition: opacity 0.5s ease;
+}
+body[data-view="cta"] .bokeh { opacity: 1; }
+.bokeh span {
+  position: absolute; border-radius: 50%; filter: blur(48px);
+  animation: bokehFloat 16s ease-in-out infinite;
+}
+.bokeh span:nth-child(1) { width: 260px; height: 260px; top: -50px; left: -50px; background: var(--ot); opacity: 0.5; }
+.bokeh span:nth-child(2) { width: 200px; height: 200px; top: 70px; right: -50px; background: var(--speech); opacity: 0.5; }
+.bokeh span:nth-child(3) { width: 240px; height: 240px; top: 42%; left: -70px; background: var(--brand); opacity: 0.45; }
+.bokeh span:nth-child(4) { width: 180px; height: 180px; top: 56%; right: -45px; background: var(--aba); opacity: 0.45; }
+.bokeh span:nth-child(5) { width: 230px; height: 230px; bottom: -70px; left: 28%; background: var(--green); opacity: 0.4; }
+.bokeh span:nth-child(6) { width: 150px; height: 150px; top: 24%; left: 46%; background: var(--speech); opacity: 0.32; }
+.bokeh span:nth-child(even) { animation-duration: 20s; animation-direction: reverse; }
+@keyframes bokehFloat {
+  0% { transform: translate(0, 0); }
+  50% { transform: translate(14px, -18px); }
+  100% { transform: translate(0, 0); }
+}
+@media (prefers-reduced-motion: reduce) { .bokeh span { animation: none; } }
+
+/* Glass cards floating over the bokeh on the activity page */
+body[data-view="cta"] .card {
+  background: color-mix(in srgb, var(--card) 80%, transparent);
+  backdrop-filter: saturate(160%) blur(14px);
+  -webkit-backdrop-filter: saturate(160%) blur(14px);
+  border: 1px solid color-mix(in srgb, #ffffff 35%, var(--line));
+  box-shadow: 0 12px 34px rgba(40, 35, 25, 0.12);
+}
+@media (prefers-color-scheme: dark) {
+  body[data-view="cta"] .card {
+    border-color: color-mix(in srgb, #ffffff 12%, var(--line));
+    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.4);
+  }
+}

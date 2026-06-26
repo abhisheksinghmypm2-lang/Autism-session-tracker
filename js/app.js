@@ -198,6 +198,7 @@ function computeStreak(countsByDate, ctaCount) {
 function setTitle(t) { el('view-title').textContent = t; }
 
 async function render() {
+  document.body.dataset.view = state.view;   // drives view-specific styling (e.g. the activity-page bokeh)
   document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
   el('add-btn').style.display = (state.view === 'sessions' || state.view === 'dashboard') ? '' : 'none';
   window.scrollTo({ top: 0 });
