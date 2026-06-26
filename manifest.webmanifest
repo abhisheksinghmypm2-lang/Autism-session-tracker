@@ -1,7 +1,7 @@
 {
-  "name": "Autism Session Tracker",
-  "short_name": "Sessions",
-  "description": "Track OT, Speech, and ABA therapy sessions, attendance, documents, and daily at-home activities.",
+  "name": "Autism Central",
+  "short_name": "Autism Central",
+  "description": "A loving record of your child's journey — track therapy sessions, celebrate milestones, and stay organized.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

@@ -1,5 +1,5 @@
 // Simple offline cache. Bump CACHE when you change app files.
-const CACHE = 'session-tracker-v13';
+const CACHE = 'session-tracker-v14';
 const ASSETS = [
   './',
   './index.html',
