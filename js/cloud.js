@@ -13,7 +13,7 @@
 const V = '10.12.5';
 const CDN = (m) => `https://www.gstatic.com/firebasejs/${V}/firebase-${m}.js`;
 
-export async function createCloud(config) {
+export async function createCloud(config, databaseId) {
   const { initializeApp } = await import(CDN('app'));
   const auth = await import(CDN('auth'));
   const fs = await import(CDN('firestore'));
@@ -22,13 +22,13 @@ export async function createCloud(config) {
   const app = initializeApp(config);
 
   // Firestore with on-device cache => offline support + fast reads.
+  // databaseId targets a named database (this project uses "autism").
+  const cache = { localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }) };
   let db;
   try {
-    db = fs.initializeFirestore(app, {
-      localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }),
-    });
+    db = databaseId ? fs.initializeFirestore(app, cache, databaseId) : fs.initializeFirestore(app, cache);
   } catch {
-    db = fs.getFirestore(app); // fallback if persistence can't initialize
+    db = databaseId ? fs.getFirestore(app, databaseId) : fs.getFirestore(app); // fallback if persistence can't init
   }
 
   const authI = auth.getAuth(app);

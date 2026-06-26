@@ -1,7 +1,7 @@
 import { db as localDB, STORE, uid } from './db.js';
 import { DEFAULT_CTAS, DEFAULT_RESOURCES, CAT_COLORS } from './content.js';
 import { donut, ring, heatmap } from './charts.js';
-import { CLOUD_ENABLED, firebaseConfig } from './firebase-config.js';
+import { CLOUD_ENABLED, firebaseConfig, firestoreDatabaseId } from './firebase-config.js';
 import { createCloud } from './cloud.js';
 
 // Active data layer: local IndexedDB by default, swapped to the cloud
@@ -928,7 +928,7 @@ async function checkCloudHealth() {
 
 async function initCloud() {
   try {
-    cloud = await createCloud(firebaseConfig);
+    cloud = await createCloud(firebaseConfig, firestoreDatabaseId);
     cloud.onUser(async (user) => {
       currentUser = user;
       // ALWAYS default to local so the UI renders instantly and never hangs.

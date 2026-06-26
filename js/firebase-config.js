@@ -19,3 +19,7 @@ export const firebaseConfig = {
   appId: '1:467064280750:web:e02c0ca39b2f5afd20ff3f',
   measurementId: 'G-BRPH85R26P',
 };
+
+// Firestore database id. Use '(default)' for the standard database, or a
+// named one. This project uses a database named "autism".
+export const firestoreDatabaseId = 'autism';
